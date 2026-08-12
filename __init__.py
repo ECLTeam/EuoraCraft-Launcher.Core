@@ -1,4 +1,4 @@
-"""EuoraCraft Game 的稳定公开接口。"""
+"""ECL Game 的稳定公开接口。"""
 
 from .Core.Downloader import Downloader, DynamicSemaphore, RateLimiter
 from .Core.ECLauncherCore import LaunchConfig, build_minecraft_cmd
