@@ -1,5 +1,5 @@
 from pathlib import Path
-from . import Libs
+from ..Core import Libs
 import zipfile
 import json
 import re
