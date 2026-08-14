@@ -181,7 +181,7 @@ class SearchMinecraft:
     def _find_loader_type(version_json: dict) -> str | None:
         ver_libs = json.dumps(version_json["libraries"], ensure_ascii=False).lower()
         if "neoforge" in ver_libs:
-            return "NeoForged"
+            return "NeoForge"
         elif "forge" in ver_libs:
             return "Forge"
         elif "quilt" in ver_libs:
@@ -202,7 +202,7 @@ class SearchMinecraft:
 
     @staticmethod
     def _find_loader_version(version_json: dict, loader_type: str) -> str:
-        if loader_type == "NeoForged":
+        if loader_type in {"NeoForge", "NeoForged"}:
             args_iter = iter(list(version_json["arguments"]["game"]))
             for arg in args_iter:
                 if arg == "--fml.neoForgeVersion":

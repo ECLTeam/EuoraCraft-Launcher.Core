@@ -424,6 +424,9 @@ def build_minecraft_cmd(config: LaunchConfig) -> str:
         index_id = version_json["assetIndex"]["id"]
 
     game_json = Libs.find_version(version_json, config.game_path, config.version_name)
+    if version_json.get("inheritsFrom") and game_json is None:
+        inherited_version = str(version_json["inheritsFrom"])
+        raise FileNotFoundError(f"缺少基础版本 {inherited_version} 的版本 JSON，无法构建启动参数")
     if game_json:
         jvm_builder.add_jvm_args(game_json[0])
         jvm_builder.add_game_args(game_json[0])

@@ -2,6 +2,7 @@ from typing import Callable
 from pathlib import Path
 from uuid import uuid4
 import subprocess
+import sys
 import threading
 import time
 
@@ -117,20 +118,31 @@ class InstancesManager:
             errors="ignore"
         )
 
+        instance_id = uuid4().hex
         callback = log_callback or self._log_callback
         exit_cb = exit_callback or self._exit_callback
 
-        instance_id = uuid4().hex
+        # 必须先登记实例，再启动读取线程。Java 在参数或运行环境不兼容时可能在数毫秒内
+        # 退出；若线程先读到 EOF，旧实现会因为实例尚未登记而丢失唯一的退出回调。
+        with self._lock:
+            self.instances[instance_id] = {
+                "Name": instance_name,
+                "ID": instance_id,
+                "Type": instance_type,
+                "StdIn": std_in,
+                "Instance": proc,
+                "Threads": [],
+                "ExitCallback": exit_cb,
+                "_exited": False,
+            }
 
-        # ---------- 修复点2：明确区分 stdout 和 stderr 线程 ----------
+        # ---------- 明确区分 stdout 和 stderr 线程 ----------
         # stdout 线程负责触发退出回调（因为 stdout 通常最后关闭）
         t_out = threading.Thread(
             target=self._read_stream,
             args=(proc.stdout, callback, proc, instance_id, instance_name, exit_cb),
             daemon=True
         )
-        t_out.start()
-
         t_err = None
         if not only_stdout and proc.stderr:
             t_err = threading.Thread(
@@ -139,23 +151,14 @@ class InstancesManager:
                 args=(proc.stderr, callback, proc, instance_id, instance_name, exit_cb),
                 daemon=True
             )
-            t_err.start()
-
         with self._lock:
-            self.instances.update(
-                {
-                    instance_id: {
-                        "Name": instance_name,
-                        "ID": instance_id,
-                        "Type": instance_type,
-                        "StdIn": std_in,
-                        "Instance": proc,
-                        "Threads": [t_out, t_err] if t_err else [t_out],
-                        "ExitCallback": exit_cb,
-                        "_exited": False,  # 内部状态，防止重复回调
-                    }
-                }
-            )
+            instance = self.instances.get(instance_id)
+            if instance is not None:
+                instance["Threads"] = [t_out, t_err] if t_err else [t_out]
+
+        t_out.start()
+        if t_err is not None:
+            t_err.start()
 
         if block_thread:
             proc.wait()  # 等待进程退出
@@ -217,6 +220,72 @@ class InstancesManager:
                 proc.wait()
                 return False
         return True
+
+    @staticmethod
+    def _notify_process_exit(proc: subprocess.Popen) -> bool:
+        """
+        通知子进程自行退出。
+
+        Windows 的 ``Popen.terminate()`` 会直接调用 ``TerminateProcess``，无法让
+        Minecraft 保存并执行正常关闭流程。因此 Windows 向属于 Java 进程的顶层
+        窗口投递 ``WM_CLOSE``；其他平台继续使用可由进程处理的终止信号。
+
+        :param proc: 需要通知的子进程
+        :return: 是否成功发送退出通知
+        """
+        if sys.platform != "win32":
+            proc.terminate()
+            return True
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        enum_windows_callback = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows.argtypes = [enum_windows_callback, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.PostMessageW.restype = wintypes.BOOL
+        notified = False
+
+        @enum_windows_callback
+        def notify_window(window_handle, _parameter):
+            nonlocal notified
+            process_id = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(window_handle, ctypes.byref(process_id))
+            if process_id.value == proc.pid and user32.PostMessageW(window_handle, 0x0010, 0, 0):
+                notified = True
+            return True
+
+        user32.EnumWindows(notify_window, 0)
+        return notified
+
+    def request_instance_exit(self, instance_id: str, wait_timeout: float | int = 3.0) -> bool:
+        """
+        请求指定实例正常退出，超时后才强制结束。
+
+        :param instance_id: 实例 ID
+        :param wait_timeout: 等待实例响应退出通知的秒数
+        :return: True 表示实例自行退出，False 表示等待超时后被强制结束
+        """
+        with self._lock:
+            inst = self.instances.get(instance_id)
+            if not inst:
+                return True
+            proc: subprocess.Popen = inst["Instance"]
+            if proc.poll() is not None:
+                return True
+
+        self._notify_process_exit(proc)
+        try:
+            proc.wait(timeout=wait_timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return False
 
     def get_instances_info(self) -> list:
         """
