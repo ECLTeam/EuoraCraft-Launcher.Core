@@ -61,11 +61,13 @@ class MicrosoftAuth:
         client_id: str,
         cache_file: str | Path | None = None,
         on_device_code: Callable[[dict[str, str]], None] | None = None,
+        verify: bool = True,
     ):
         """
         :param client_id: Azure AD 应用程序（公共客户端）的客户端 ID
         :param cache_file: 存储令牌缓存的路径 (JSON 文件)。若为 None，则仅在内存中缓存
         :param on_device_code: 接收设备流信息字典的回调函数（包含 'user_code', 'verification_uri' 等）
+        :param verify: 是否校验 Microsoft 登录服务器的 SSL 证书
         """
         self.client_id = client_id
         self.scope = ["XboxLive.signin"]
@@ -81,7 +83,8 @@ class MicrosoftAuth:
         self.app = msal.PublicClientApplication(
             client_id=self.client_id,
             authority="https://login.microsoftonline.com/consumers",
-            token_cache=self.token_cache
+            token_cache=self.token_cache,
+            verify=verify
         )
 
         self._device_code_callback = on_device_code or (
@@ -371,14 +374,17 @@ class MicrosoftAuthManager:
         self,
         client_id: str,
         cache_path: Path | str | None = None,
-        on_device_code: Callable[[dict[str, str]], None] | None = None
+        on_device_code: Callable[[dict[str, str]], None] | None = None,
+        verify: bool = True,
     ):
         """
         :param client_id: Azure AD 应用程序客户端 ID
         :param cache_path: 存储数据的根目录
         :param on_device_code: 设备码回调函数
+        :param verify: 是否校验 Microsoft 登录服务器的 SSL 证书
         """
         self.client_id = client_id
+        self.verify = verify
         self.cache_path = Path(cache_path) if cache_path else Path.home() / ".ECL"
         self.cache_path = self.cache_path / "accounts"
         self.cache_path.mkdir(parents=True, exist_ok=True)
@@ -408,7 +414,8 @@ class MicrosoftAuthManager:
                 ms_client = MicrosoftAuth(
                     client_id=self.client_id,
                     cache_file=self.account_cache_path / f"{account_id}.json",
-                    on_device_code=self.on_device_code
+                    on_device_code=self.on_device_code,
+                    verify=self.verify,
                 )
                 self.microsoft_accounts[account_id] = info
                 self.microsoft_clients[account_id] = ms_client
@@ -445,7 +452,8 @@ class MicrosoftAuthManager:
             ms_client = MicrosoftAuth(
                 client_id=self.client_id,   # 使用实例的 client_id
                 cache_file=self.account_cache_path / f"{account_id}.json",
-                on_device_code=self.on_device_code
+                on_device_code=self.on_device_code,
+                verify=self.verify,
             )
             token, email = ms_client.get_token()
 
