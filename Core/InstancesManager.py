@@ -55,7 +55,7 @@ class InstancesManager:
         log_callback: Callable[[str, str], None] | None = None,
         exit_callback: Callable[[int, str], None] | None = None,
         block_thread: bool = False
-    ) -> str:
+    ) -> tuple[str, subprocess.Popen]:
         """
         创建一个新的子进程实例，所有输出（stdout+stderr）合并到 stdout。
         :param instance_name: 实例名称
@@ -107,7 +107,7 @@ class InstancesManager:
         if block_thread:
             proc.wait()
 
-        return instance_id
+        return instance_id, proc
 
     # ---------- 标准输入 ----------
     def send_stdin(self, instance_id: str, data: str) -> None:
