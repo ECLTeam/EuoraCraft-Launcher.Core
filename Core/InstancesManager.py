@@ -6,17 +6,30 @@ import threading
 import time
 
 class InstancesManager:
-    def __init__(self):
+    def __init__(
+        self,
+        log_callback: Callable[[str, str], None] | None = None,
+        exit_callback: Callable[[int, str], None] | None = None
+    ):
+        """
+        :param log_callback: 无论如何都能收集到所有实例的 Log
+        :param exit_callback: 无论如何都能收集到所有实例的 退出码
+        """
         self.instances: dict[str, dict] = {}
         self._lock = threading.Lock()
-        self._log_callback: Callable[[str, str], None] = lambda log, instance_id: print(f"[{instance_id}] {log}")
-        self._exit_callback: Callable[[int, str], None] = lambda code, name: print(f"进程 {name} 退出，代码 {code}")
+        self._log_callback = log_callback or (lambda log, instance_id: print(f"[{instance_id}] {log}"))
+        self._exit_callback = exit_callback or (lambda code, name: print(f"进程 {name} 退出，代码 {code}"))
+
+    @staticmethod
+    def _noop(*_): pass
 
     # ---------- 回调设置 ----------
     def set_log_callback(self, callback: Callable[[str, str], None]) -> None:
+        """重新设置 Log 回调"""
         self._log_callback = callback
 
     def set_exit_callback(self, callback: Callable[[int, str], None]) -> None:
+        """重新设置 退出码 回调"""
         self._exit_callback = callback
 
     # ---------- 内部流读取线程 ----------
@@ -28,17 +41,20 @@ class InstancesManager:
         instance_id: str,
         exit_callback: Callable[[int, str], None]
     ) -> None:
-        """读取 stdout 流（stderr 已合并），逐行回调，进程退出时触发退出回调。"""
+        """读取 stdout 流（stderr 已合并），逐行回调，进程退出时触发退出回调"""
         try:
             for line in iter(stream.readline, ""):
                 if line:
-                    callback(line.rstrip("\n"), instance_id)
+                    log = line.rstrip("\n")
+                    callback(log, instance_id)
+                    self._log_callback(log, instance_id)
         finally:
             stream.close()
             return_code = proc.wait()   # 等待进程真正结束
             with self._lock:
                 self.instances.pop(instance_id, None)
             exit_callback(return_code, instance_id)
+            self._exit_callback(return_code, instance_id)
 
     # ---------- 创建实例 ----------
     def create_instance(
@@ -54,7 +70,7 @@ class InstancesManager:
         block_thread: bool = False
     ) -> tuple[str, subprocess.Popen]:
         """
-        创建一个新的子进程实例，所有输出（stdout+stderr）合并到 stdout。
+        创建一个新的子进程实例，所有输出（stdout+stderr）合并到 stdout
         :param instance_name: 实例名称
         :param instance_type: 实例类型
         :param args: 指令
@@ -64,8 +80,13 @@ class InstancesManager:
         :param log_callback: 回调 (log: str, instance_id: str) -> None
         :param exit_callback: 回调 (exit_code: int, instance_id: str) -> None
         :param block_thread: 是否阻塞调用线程直到子进程退出
-        :return: 实例 ID (uuid4.hex)
+        :return: (实例ID(uuid4.hex), subprocess.Popen)
         """
+        log_callback = log_callback or self._noop
+        exit_callback = exit_callback or self._noop
+
+        instance_id = uuid4().hex
+
         proc = subprocess.Popen(
             args,
             cwd=cwd,
@@ -79,14 +100,10 @@ class InstancesManager:
             errors="ignore"
         )
 
-        callback = log_callback or self._log_callback
-        exit_cb = exit_callback or self._exit_callback
-        instance_id = uuid4().hex
-
         # 只启动一个 stdout 读取线程
         t_out = threading.Thread(
             target=self._read_stream,
-            args=(proc.stdout, callback, proc, instance_id, exit_cb),
+            args=(proc.stdout, log_callback, proc, instance_id, exit_callback),
             daemon=True
         )
         t_out.start()
@@ -98,7 +115,7 @@ class InstancesManager:
                 "Type": instance_type,
                 "StdIn": std_in,
                 "Instance": proc,
-                "Threads": t_out,
+                "Threads": t_out
             }
 
         if block_thread:
@@ -107,19 +124,27 @@ class InstancesManager:
         return instance_id, proc
 
     # ---------- 标准输入 ----------
-    def send_stdin(self, instance_id: str, data: str) -> None:
+    def send_stdin(self, instance_id: str, data: str) -> bool:
+        """
+        向指定实例发送数据
+        :param instance_id: 实例 ID
+        :param data: 数据(因为指定了 `text=True` 所以是 str 类型)
+        :return: 发送成功返回 True
+        """
         if instance_id not in self.instances:
-            return
+            return False
         inst = self.instances[instance_id]
         if not inst["StdIn"]:
-            return
+            return False
         proc: subprocess.Popen = inst["Instance"]
         if proc.stdin and proc.poll() is None:
             try:
                 proc.stdin.write(data)
                 proc.stdin.flush()
+                return True
             except (BrokenPipeError, OSError):
                 pass
+        return False
 
     # ---------- 停止实例 ----------
     def stop_instance(self, instance_id: str, force: bool = False, wait_timeout: float | int | None = None) -> bool:
@@ -135,7 +160,7 @@ class InstancesManager:
             if not inst:
                 return True
             proc: subprocess.Popen = inst["Instance"]
-            if proc.poll() is not None:
+            if proc.poll():
                 return True
 
         # 在锁外执行终止
@@ -144,7 +169,7 @@ class InstancesManager:
         else:
             proc.terminate()
 
-        if wait_timeout is not None:
+        if wait_timeout:
             try:
                 proc.wait(timeout=wait_timeout)
                 return True
@@ -155,11 +180,18 @@ class InstancesManager:
         return True
 
     def get_instances_info(self) -> list:
+        """获取全部实例的信息"""
         with self._lock:
             return list(self.instances.values())
 
     # ---------- 优雅关闭所有实例 ----------
     def shutdown_all(self, force: bool = False, wait_timeout: float = 3.0) -> None:
+        """
+        停止指定实例
+        :param force: True 使用 kill()，False 使用 terminate()
+        :param wait_timeout: 等待进程结束的超时时间(秒)，None 表示不等待
+        :return: None
+        """
         with self._lock:
             ids = list(self.instances.keys())
 
