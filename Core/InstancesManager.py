@@ -26,7 +26,6 @@ class InstancesManager:
         callback: Callable[[str, str], None],
         proc: subprocess.Popen,
         instance_id: str,
-        instance_name: str,
         exit_callback: Callable[[int, str], None]
     ) -> None:
         """读取 stdout 流（stderr 已合并），逐行回调，进程退出时触发退出回调。"""
@@ -34,14 +33,12 @@ class InstancesManager:
             for line in iter(stream.readline, ""):
                 if line:
                     callback(line.rstrip("\n"), instance_id)
-        except (OSError, ValueError):
-            pass
         finally:
             stream.close()
             return_code = proc.wait()   # 等待进程真正结束
             with self._lock:
                 self.instances.pop(instance_id, None)
-            exit_callback(return_code, instance_name)
+            exit_callback(return_code, instance_id)
 
     # ---------- 创建实例 ----------
     def create_instance(
@@ -89,7 +86,7 @@ class InstancesManager:
         # 只启动一个 stdout 读取线程
         t_out = threading.Thread(
             target=self._read_stream,
-            args=(proc.stdout, callback, proc, instance_id, instance_name, exit_cb),
+            args=(proc.stdout, callback, proc, instance_id, exit_cb),
             daemon=True
         )
         t_out.start()
