@@ -101,7 +101,7 @@ class InstancesManager:
                 "Type": instance_type,
                 "StdIn": std_in,
                 "Instance": proc,
-                "Threads": [t_out],
+                "Threads": t_out,
             }
 
         if block_thread:
