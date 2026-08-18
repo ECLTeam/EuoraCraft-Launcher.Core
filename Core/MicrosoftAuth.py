@@ -3,10 +3,10 @@ from threading import Lock
 from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
+import base64
 import httpx
 import json
 import time
-import msal
 
 
 # ---------- 异常层次 ----------
@@ -50,98 +50,252 @@ class SetNameError(NetException):
     pass
 
 
-# ---------- 微软认证（纯 OAuth） ----------
+# ---------- 微软认证（纯 OAuth，无 msal） ----------
 class MicrosoftAuth:
     """
     负责通过设备码流程进行 Microsoft 账户认证
     提供用于 Xbox Live 的访问令牌 (作用域: 'XboxLive.signin')
     """
+    DEVICE_CODE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
+    TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+
     def __init__(
         self,
         client_id: str,
         cache_file: str | Path | None = None,
         on_device_code: Callable[[dict[str, str]], None] | None = None,
         verify: bool = True,
+        client: httpx.Client | None = None,      # 新增：可共享的客户端
     ):
         """
         :param client_id: Azure AD 应用程序（公共客户端）的客户端 ID
         :param cache_file: 存储令牌缓存的路径 (JSON 文件)。若为 None，则仅在内存中缓存
         :param on_device_code: 接收设备流信息字典的回调函数（包含 'user_code', 'verification_uri' 等）
         :param verify: 是否校验 Microsoft 登录服务器的 SSL 证书
+        :param client: 可选的共享 httpx.Client 实例，若不提供则内部自行创建
         """
         self.client_id = client_id
         self.scope = ["XboxLive.signin"]
         self.cache_file = Path(cache_file) if cache_file else None
-
-        self.token_cache = msal.SerializableTokenCache()
-        if self.cache_file and self.cache_file.exists():
-            try:
-                self.token_cache.deserialize(self.cache_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-
-        self.app = msal.PublicClientApplication(
-            client_id=self.client_id,
-            authority="https://login.microsoftonline.com/consumers",
-            token_cache=self.token_cache,
-            verify=verify
-        )
-
+        self.verify = verify
         self._device_code_callback = on_device_code or (
             lambda flow: print(f"Link: {flow['verification_uri']}, Code: {flow['user_code']}")
         )
+
+        # 客户端管理
+        self._external_client = client
+        if client is not None:
+            self._client = client
+            self._owns_client = False
+        else:
+            self._client = httpx.Client(
+                timeout=httpx.Timeout(15, connect=10),
+                verify=verify,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            self._owns_client = True
+
+        # 缓存结构:
+        # {
+        #   "access_token": str,
+        #   "refresh_token": str,
+        #   "expires_at": float,      # 时间戳
+        #   "id_token": str,
+        #   "id_token_claims": dict   # 解析后的 claims
+        # }
+        self._cache = {}
+        self._load_cache()
+
+    def _load_cache(self) -> None:
+        """从文件加载缓存"""
+        if self.cache_file and self.cache_file.exists():
+            try:
+                with self.cache_file.open("r", encoding="utf-8") as f:
+                    self._cache = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self._cache = {}
+
+    def _save_cache(self) -> None:
+        """持久化缓存到文件"""
+        if self.cache_file and self._cache:
+            try:
+                with self.cache_file.open("w", encoding="utf-8") as f:
+                    json.dump(self._cache, f, indent=2)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _parse_id_token(id_token: str) -> dict:
+        """解码 JWT 的 payload 部分（不验证签名）"""
+        try:
+            # JWT 格式: header.payload.signature
+            payload = id_token.split(".")[1]
+            # 补齐 base64 填充
+            payload += "=" * (-len(payload) % 4)
+            decoded = base64.urlsafe_b64decode(payload)
+            return json.loads(decoded)
+        except Exception:
+            return {}
+
+    def _refresh_token(self) -> tuple[str, str] | None:
+        """
+        使用 refresh_token 获取新令牌，成功返回 (access_token, email)，失败返回 None
+        """
+        refresh_token = self._cache.get("refresh_token")
+        if not refresh_token:
+            return None
+
+        data = {
+            "client_id": self.client_id,
+            "refresh_token": refresh_token,
+            "grant_type": "refresh_token",
+            "scope": " ".join(self.scope),
+        }
+        try:
+            resp = self._client.post(self.TOKEN_URL, data=data)
+            resp.raise_for_status()
+            token_data = resp.json()
+            if "access_token" in token_data:
+                self._update_cache(token_data)
+                self._save_cache()
+                claims = self._cache.get("id_token_claims", {})
+                email = claims.get("preferred_username") or claims.get("email") or ""
+                return token_data["access_token"], email
+        except Exception:
+            # 刷新失败，清空缓存（防止反复尝试）
+            self._cache.clear()
+            self._save_cache()
+        return None
+
+    def _update_cache(self, token_data: dict) -> None:
+        """根据 token 端点返回的数据更新缓存"""
+        self._cache["access_token"] = token_data["access_token"]
+        if "refresh_token" in token_data:
+            self._cache["refresh_token"] = token_data["refresh_token"]
+        expires_in = token_data.get("expires_in", 86400)
+        self._cache["expires_at"] = time.time() + expires_in - 60  # 提前 60 秒视为过期
+        if "id_token" in token_data:
+            self._cache["id_token"] = token_data["id_token"]
+            self._cache["id_token_claims"] = self._parse_id_token(token_data["id_token"])
+
+    def _device_flow(self) -> tuple[str, str]:
+        """
+        执行设备码流程，返回 (access_token, email)
+        若失败则抛出 MicrosoftAuthError
+        """
+        # 1. 请求 device_code
+        data = {
+            "client_id": self.client_id,
+            "scope": " ".join(self.scope),
+        }
+        try:
+            resp = self._client.post(self.DEVICE_CODE_URL, data=data)
+            resp.raise_for_status()
+            flow = resp.json()
+        except Exception as e:
+            raise MicrosoftAuthError(f"获取 device_code 失败: {e}") from e
+
+        if "user_code" not in flow:
+            raise MicrosoftAuthError(f"设备码流程初始化失败: {flow}")
+
+        self._device_code_callback(flow)
+
+        # 2. 轮询 token 端点
+        device_code = flow["device_code"]
+        interval = flow.get("interval", 5)
+        expires_in = flow.get("expires_in", 1800)
+        start_time = time.time()
+
+        while time.time() - start_time < expires_in:
+            time.sleep(interval)
+            data = {
+                "client_id": self.client_id,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }
+            try:
+                resp = self._client.post(self.TOKEN_URL, data=data)
+                if resp.status_code == 400:
+                    error = resp.json().get("error")
+                    if error == "authorization_pending":
+                        continue  # 用户尚未完成授权，继续等待
+                    elif error == "slow_down":
+                        interval += 2
+                        continue
+                    elif error == "expired_token":
+                        raise MicrosoftAuthError("设备码已过期，请重新尝试")
+                    else:
+                        # 其他错误（如 access_denied, bad_verification_code 等）
+                        raise MicrosoftAuthError(f"授权失败: {error}")
+                resp.raise_for_status()
+                token_data = resp.json()
+                if "access_token" in token_data:
+                    self._update_cache(token_data)
+                    self._save_cache()
+                    claims = self._cache.get("id_token_claims", {})
+                    email = claims.get("preferred_username") or claims.get("email") or ""
+                    return token_data["access_token"], email
+                else:
+                    raise MicrosoftAuthError("令牌响应缺少 access_token")
+            except httpx.HTTPStatusError as e:
+                # 非 400 的其他 HTTP 错误
+                raise MicrosoftAuthError(f"轮询令牌失败: {e}") from e
+            except Exception as e:
+                raise MicrosoftAuthError(f"轮询令牌异常: {e}") from e
+
+        raise MicrosoftAuthError("设备码授权超时")
 
     def get_token(self) -> tuple[str, str]:
         """
         如果认证失败则抛出 MicrosoftAuthError
         :return: (access_token, email)
         """
-        # 1. 静默获取（缓存或刷新）
-        accounts = self.app.get_accounts()
-        if accounts:
-            result = self.app.acquire_token_silent(self.scope, account=accounts[0])
-            if result and "access_token" in result:
-                self._save_cache()
-                claims = result.get("id_token_claims", {})
-                email = claims.get("preferred_username") or claims.get("email") or ""
-                return result["access_token"], email
-
-        # 2. 设备码流程
-        flow = self.app.initiate_device_flow(scopes=self.scope)
-        if "user_code" not in flow:
-            raise MicrosoftAuthError(f"设备码流程初始化失败: {flow}")
-
-        self._device_code_callback(flow)
-        result = self.app.acquire_token_by_device_flow(flow)
-
-        if result and "access_token" in result:
-            self._save_cache()
-            claims = result.get("id_token_claims", {})
+        # 1. 检查缓存中的 access_token 是否有效
+        access_token = self._cache.get("access_token")
+        expires_at = self._cache.get("expires_at", 0)
+        if access_token and time.time() < expires_at:
+            claims = self._cache.get("id_token_claims", {})
             email = claims.get("preferred_username") or claims.get("email") or ""
-            return result["access_token"], email
-        else:
-            error = result.get("error", "未知错误")
-            desc = result.get("error_description", "无描述信息")
-            raise MicrosoftAuthError(f"设备码流程失败: {error} - {desc}")
+            return str(access_token), email
 
-    def _save_cache(self) -> None:
-        """将令牌缓存持久化到文件"""
-        if self.cache_file and self.token_cache.has_state_changed:
-            try:
-                self.cache_file.write_text(self.token_cache.serialize(), encoding="utf-8")
-            except OSError:
-                pass
+        # 2. 尝试使用 refresh_token 刷新
+        refreshed = self._refresh_token()
+        if refreshed:
+            return refreshed
+
+        # 3. 执行设备码流程
+        return self._device_flow()
+
+    def close(self) -> None:
+        """如果拥有自己的客户端则关闭；否则不做任何操作"""
+        if self._owns_client and hasattr(self, "_client"):
+            self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
 
 # ---------- Minecraft API 客户端 ----------
 class MinecraftClient:
-    def __init__(self):
-        self.client = httpx.Client(
-            http2=True,
-            timeout=httpx.Timeout(15, connect=10),
-            follow_redirects=True,
-            headers={"Content-Type": "application/json", "Accept": "application/json"}
-        )
+    def __init__(self, client: httpx.Client | None = None):
+        """
+        :param client: 可选的共享 httpx.Client 实例，若不提供则内部自行创建
+        """
+        self._external_client = client
+        if client is not None:
+            self.client = client
+            self._owns_client = False
+        else:
+            self.client = httpx.Client(
+                http2=True,
+                timeout=httpx.Timeout(15, connect=10),
+                follow_redirects=True,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+            )
+            self._owns_client = True
 
     def _get_xbox_tokens(self, ms_token: str) -> tuple[str, str]:
         """
@@ -230,7 +384,7 @@ class MinecraftClient:
         except Exception as e:
             raise MinecraftAuthError(e) from e
 
-    def upload_skin(self, minecraft_token: str, variant: str, png_image: bytes):
+    def upload_skin(self, minecraft_token: str, variant: str, png_image: bytes) -> dict:
         """
         上传皮肤
         :param minecraft_token: Minecraft Token
@@ -281,7 +435,6 @@ class MinecraftClient:
             "Accept": "application/json",
             "Authorization": f"Bearer {minecraft_token}"
         }
-
         try:
             resp = self.client.delete(url, headers=headers)
             resp.raise_for_status()
@@ -296,14 +449,13 @@ class MinecraftClient:
         :param cape_id: 披风 ID
         :return: Profile
         """
-        url = f"https://api.minecraftservices.com/minecraft/profile/capes/active"
+        url = "https://api.minecraftservices.com/minecraft/profile/capes/active"
         payload = {"capeId": cape_id}
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {minecraft_token}"
         }
-
         try:
             resp = self.client.put(url, json=payload, headers=headers)
             resp.raise_for_status()
@@ -342,7 +494,6 @@ class MinecraftClient:
             "Accept": "application/json",
             "Authorization": f"Bearer {minecraft_token}"
         }
-
         try:
             resp = self.client.put(url, headers=headers)
             if resp.status_code == 400:
@@ -356,15 +507,15 @@ class MinecraftClient:
         except Exception as e:
             raise SetNameError(e) from e
 
-    def close(self):
-        """关闭 HTTP 客户端"""
-        if hasattr(self, "client"):
+    def close(self) -> None:
+        """如果拥有自己的客户端则关闭，否则不执行任何操作"""
+        if self._owns_client and hasattr(self, "client"):
             self.client.close()
 
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
 
@@ -394,11 +545,21 @@ class MicrosoftAuthManager:
         self.account_cache_path = self.cache_path / "ms_accounts"
         self.account_cache_path.mkdir(parents=True, exist_ok=True)
 
+        # 共享 HTTP 客户端
+        self._shared_client = httpx.Client(
+            timeout=httpx.Timeout(15, connect=10),
+            verify=verify,
+            http2=True,
+            follow_redirects=True,
+        )
+
         # 共享数据结构
         self.microsoft_accounts: dict[str, dict] = {}   # account_id -> 账户信息
         self.microsoft_clients: dict[str, MicrosoftAuth] = {}  # account_id -> MicrosoftAuth 实例
         self.minecraft_tokens: dict[str, tuple[str, float, int]] = {}  # account_id -> (token, time, expires_in)
-        self.minecraft_client = MinecraftClient()
+
+        # MinecraftClient 也使用共享客户端
+        self.minecraft_client = MinecraftClient(client=self._shared_client)
 
         self._lock = Lock()
         self._load_accounts()
@@ -416,10 +577,11 @@ class MicrosoftAuthManager:
                     cache_file=self.account_cache_path / f"{account_id}.json",
                     on_device_code=self.on_device_code,
                     verify=self.verify,
+                    client=self._shared_client,           # 共享客户端
                 )
                 self.microsoft_accounts[account_id] = info
                 self.microsoft_clients[account_id] = ms_client
-            except:
+            except Exception:
                 pass
 
     def _save_account_list(self) -> None:
@@ -450,10 +612,11 @@ class MicrosoftAuthManager:
         with self._lock:
             account_id = uuid4().hex
             ms_client = MicrosoftAuth(
-                client_id=self.client_id,   # 使用实例的 client_id
+                client_id=self.client_id,
                 cache_file=self.account_cache_path / f"{account_id}.json",
                 on_device_code=self.on_device_code,
                 verify=self.verify,
+                client=self._shared_client,              # 共享客户端
             )
             token, email = ms_client.get_token()
 
@@ -593,14 +756,17 @@ class MicrosoftAuthManager:
         return self.minecraft_client.set_profile_name(mc_token, new_name)
 
     def close(self) -> None:
-        """释放内部 HTTP 客户端资源"""
-        if hasattr(self, "minecraft_client") and self.minecraft_client:
-            self.minecraft_client.close()
-            self.minecraft_client = None
+        """释放共享 HTTP 客户端，并清理子客户端引用"""
+        if hasattr(self, "_shared_client") and self._shared_client:
+            self._shared_client.close()
+            self._shared_client = None
+        # 子客户端持有共享客户端的引用，无需再单独关闭
+        self.minecraft_client = None
+        # 清空 MicrosoftAuth 实例，避免持有已关闭的客户端引用
+        self.microsoft_clients.clear()
 
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-
