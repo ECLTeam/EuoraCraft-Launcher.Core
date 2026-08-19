@@ -280,7 +280,7 @@ class Downloader:
             await self.pause_event.wait()
 
             chunk_size = 1 * 1024 * 1024  # 1MB
-            async with self.client.stream("GET", url, timeout=30.0) as response:
+            async with self.client.stream("GET", url, timeout=15.0) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
                 real_size = int(content_length) if content_length is not None else 0

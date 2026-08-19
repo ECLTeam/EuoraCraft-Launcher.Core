@@ -1,8 +1,51 @@
 from dataclasses import dataclass, fields, asdict
+from html.parser import HTMLParser
 from time import sleep as t_sleep
 from pathlib import Path
-from lxml import html
 import httpx
+
+
+class _ForgeVersionParser(HTMLParser):
+    """解析 Forge 版本列表 HTML，提取 download-version 单元格的直接文本。
+
+    原实现依赖 lxml 的 XPath，改用标准库以缩减打包体积。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._in_table = False
+        self._in_td = False
+        self._td_depth = 0
+        self._td_text: list[str] = []
+        self.versions: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        classes = (dict(attrs).get("class") or "").split()
+        if tag == "table" and "download-list" in classes:
+            self._in_table = True
+        elif tag == "td" and self._in_table and "download-version" in classes:
+            self._in_td = True
+            self._td_depth = 1
+            self._td_text = []
+        elif self._in_td:
+            self._td_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "table":
+            self._in_table = False
+        elif tag == "td" and self._in_td:
+            text = "".join(self._td_text).strip()
+            if text:
+                self.versions.append(text)
+            self._in_td = False
+            self._td_depth = 0
+        elif self._in_td:
+            self._td_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        # 只收集 td 的直接文本，忽略子元素（图标、链接）内的文本
+        if self._in_td and self._td_depth == 1:
+            self._td_text.append(data)
 
 
 
@@ -317,20 +360,13 @@ class BaseApiClient:
             get_html = self._download_with_retry(
                 f"https://files.minecraftforge.net/net/minecraftforge/forge/index_{game_version}.html"
             )
-            tree = html.fromstring(get_html)
-
-            # 使用 XPath 精确匹配表格，并提取 td 的直接文本
-            version_tds = tree.xpath('//table[contains(@class, "download-list")]/tbody/tr/td[contains(@class, "download-version")]')
-            for td in version_tds:
-                # 提取直接文本节点，忽略子元素（图标等）
-                text_nodes = td.xpath("./text()")
-                if text_nodes:
-                    version = text_nodes[0].strip()
-                    if version:  # 过滤空字符串
-                        versions.append({
-                            "LoaderVersion": version,
-                            "GameVersion": game_version_id
-                        })
+            parser = _ForgeVersionParser()
+            parser.feed(get_html)
+            for version in parser.versions:
+                versions.append({
+                    "LoaderVersion": version,
+                    "GameVersion": game_version_id
+                })
             return versions
 
     def download_forge_installer(self, game_version_id: str, loader_version: str, save_path: Path | str) -> Path:

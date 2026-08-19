@@ -270,10 +270,13 @@ class MicrosoftAuth:
 
         raise MicrosoftAuthError("设备码授权超时")
 
-    async def get_token(self) -> tuple[str, str]:
+    async def get_token(self, allow_device_flow: bool = True) -> tuple[str, str]:
         """
-        如果认证失败则抛出 MicrosoftAuthError
+        获取访问令牌，缓存有效则直接返回，否则尝试刷新。
+
+        :param allow_device_flow: 刷新失败时是否进入设备码流程，仅登录场景允许
         :return: (access_token, email)
+        :raises MicrosoftAuthError: 刷新失败且不允许设备码流程时抛出
         """
         # 1. 检查缓存中的 access_token 是否有效
         access_token = self._cache.get("access_token")
@@ -288,7 +291,9 @@ class MicrosoftAuth:
         if refreshed:
             return refreshed
 
-        # 3. 执行设备码流程
+        # 3. 刷新失败：已有账户直接报错，避免误入设备码流程导致操作长时间挂起
+        if not allow_device_flow:
+            raise MicrosoftAuthError("Microsoft 令牌刷新失败，请检查网络后重试或重新登录该账户")
         return await self._device_flow()
 
     async def close(self) -> None:
@@ -617,8 +622,8 @@ class MicrosoftAuthManager:
         )
 
     async def _get_microsoft_token(self, account_id: str) -> str:
-        """获取 Microsoft 访问令牌（仅令牌字符串）"""
-        token, _ = await self.microsoft_clients[account_id].get_token()
+        """获取 Microsoft 访问令牌（仅令牌字符串），已有账户禁止进入设备码流程"""
+        token, _ = await self.microsoft_clients[account_id].get_token(allow_device_flow=False)
         return token
 
     # ---------- 公开接口 ----------
