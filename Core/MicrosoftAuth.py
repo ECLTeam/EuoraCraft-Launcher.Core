@@ -333,6 +333,12 @@ class MinecraftClient:
             )
             self._owns_client = True
 
+    def _raise_for_status(self, resp: httpx.Response) -> None:
+        """429 时抛出友好提示，其余状态交给 httpx 处理"""
+        if resp.status_code == 429:
+            raise MinecraftAuthError("请求过快，请稍后再试")
+        resp.raise_for_status()
+
     async def _get_xbox_tokens(self, ms_token: str) -> tuple[str, str]:
         """
         交换 Microsoft 令牌获取 Xbox Live 令牌和用户哈希
@@ -392,7 +398,7 @@ class MinecraftClient:
 
         try:
             resp = await self.client.post(url, json=payload)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             data = resp.json()
             return data["access_token"], time.time(), data.get("expires_in", 86400)
         except Exception as e:
@@ -416,7 +422,7 @@ class MinecraftClient:
                 return resp.json()
             elif resp.status_code == 404:
                 return None
-            resp.raise_for_status()
+            self._raise_for_status(resp)
         except Exception as e:
             raise MinecraftAuthError(e) from e
 
@@ -455,7 +461,7 @@ class MinecraftClient:
 
         try:
             resp = await self.client.post(url, content=request_body, headers=headers)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
@@ -473,7 +479,7 @@ class MinecraftClient:
         }
         try:
             resp = await self.client.delete(url, headers=headers)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
@@ -494,7 +500,7 @@ class MinecraftClient:
         }
         try:
             resp = await self.client.put(url, json=payload, headers=headers)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
@@ -512,7 +518,7 @@ class MinecraftClient:
         }
         try:
             resp = await self.client.delete(url, headers=headers)
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
@@ -538,7 +544,7 @@ class MinecraftClient:
             elif resp.status_code == 403:
                 print(resp.json())
                 raise SetNameError("距离上次修改不足30天或处在冷却期或该用户名已被占用")
-            resp.raise_for_status()
+            self._raise_for_status(resp)
             return resp.json()
         except Exception as e:
             raise SetNameError(e) from e
