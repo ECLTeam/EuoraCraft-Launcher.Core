@@ -3,6 +3,7 @@ from threading import Lock
 from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
+import asyncio
 import base64
 import httpx
 import json
@@ -50,6 +51,27 @@ class SetNameError(NetException):
     pass
 
 
+def _friendly_network_error(exc: Exception, _depth: int = 0) -> str | None:
+    """
+    把底层网络连接异常转换成可读的排查提示，非网络异常返回 None。
+
+    httpx 会把连接失败包装为 ``httpx.ConnectError`` 且 ``str(exc)`` 可能为空，
+    直接拼进错误消息会导致用户看到不完整的原因，因此这里按异常链给出统一文案。
+    :param exc: 待判断的异常
+    :return: 连接类异常的排查提示；非网络异常返回 None
+    """
+    if _depth > 8:
+        return None
+    if isinstance(exc, httpx.ConnectError):
+        return "无法连接到微软认证服务器，请检查网络连接；若已配置系统代理或 HTTP(S)_PROXY，请确认代理放通了微软登录域名，或先关闭代理后重试。"
+    if isinstance(exc, httpx.TimeoutException):
+        return "连接微软认证服务器超时，请检查网络连接后重试。"
+    if isinstance(exc, httpx.TransportError):
+        return "连接微软认证服务器时发生网络错误，请稍后重试。"
+    cause = exc.__cause__
+    return _friendly_network_error(cause, _depth + 1) if cause is not None else None
+
+
 # ---------- 微软认证（纯 OAuth，无 msal） ----------
 class MicrosoftAuth:
     """
@@ -65,14 +87,14 @@ class MicrosoftAuth:
         cache_file: str | Path | None = None,
         on_device_code: Callable[[dict[str, str]], None] | None = None,
         verify: bool = True,
-        client: httpx.Client | None = None,      # 新增：可共享的客户端
+        client: httpx.AsyncClient | None = None,      # 可共享的异步客户端
     ):
         """
         :param client_id: Azure AD 应用程序（公共客户端）的客户端 ID
         :param cache_file: 存储令牌缓存的路径 (JSON 文件)。若为 None，则仅在内存中缓存
         :param on_device_code: 接收设备流信息字典的回调函数（包含 'user_code', 'verification_uri' 等）
         :param verify: 是否校验 Microsoft 登录服务器的 SSL 证书
-        :param client: 可选的共享 httpx.Client 实例，若不提供则内部自行创建
+        :param client: 可选的共享 httpx.AsyncClient 实例，若不提供则内部自行创建
         """
         self.client_id = client_id
         self.scope = ["XboxLive.signin"]
@@ -88,7 +110,7 @@ class MicrosoftAuth:
             self._client = client
             self._owns_client = False
         else:
-            self._client = httpx.Client(
+            self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(15, connect=10),
                 verify=verify,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -137,7 +159,7 @@ class MicrosoftAuth:
         except Exception:
             return {}
 
-    def _refresh_token(self) -> tuple[str, str] | None:
+    async def _refresh_token(self) -> tuple[str, str] | None:
         """
         使用 refresh_token 获取新令牌，成功返回 (access_token, email)，失败返回 None
         """
@@ -152,7 +174,7 @@ class MicrosoftAuth:
             "scope": " ".join(self.scope),
         }
         try:
-            resp = self._client.post(self.TOKEN_URL, data=data)
+            resp = await self._client.post(self.TOKEN_URL, data=data)
             resp.raise_for_status()
             token_data = resp.json()
             if "access_token" in token_data:
@@ -178,7 +200,7 @@ class MicrosoftAuth:
             self._cache["id_token"] = token_data["id_token"]
             self._cache["id_token_claims"] = self._parse_id_token(token_data["id_token"])
 
-    def _device_flow(self) -> tuple[str, str]:
+    async def _device_flow(self) -> tuple[str, str]:
         """
         执行设备码流程，返回 (access_token, email)
         若失败则抛出 MicrosoftAuthError
@@ -189,11 +211,12 @@ class MicrosoftAuth:
             "scope": " ".join(self.scope),
         }
         try:
-            resp = self._client.post(self.DEVICE_CODE_URL, data=data)
+            resp = await self._client.post(self.DEVICE_CODE_URL, data=data)
             resp.raise_for_status()
             flow = resp.json()
         except Exception as e:
-            raise MicrosoftAuthError(f"获取 device_code 失败: {e}") from e
+            reason = _friendly_network_error(e) or str(e) or "未知网络错误"
+            raise MicrosoftAuthError(f"获取 device_code 失败: {reason}") from e
 
         if "user_code" not in flow:
             raise MicrosoftAuthError(f"设备码流程初始化失败: {flow}")
@@ -205,16 +228,17 @@ class MicrosoftAuth:
         interval = flow.get("interval", 5)
         expires_in = flow.get("expires_in", 1800)
         start_time = time.time()
+        flow["expires_at"] = start_time + expires_in  # 供外部在取消登录时置 0 以终止轮询
 
-        while time.time() - start_time < expires_in:
-            time.sleep(interval)
+        while time.time() < float(flow.get("expires_at", start_time + expires_in)):
+            await asyncio.sleep(interval)
             data = {
                 "client_id": self.client_id,
                 "device_code": device_code,
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             }
             try:
-                resp = self._client.post(self.TOKEN_URL, data=data)
+                resp = await self._client.post(self.TOKEN_URL, data=data)
                 if resp.status_code == 400:
                     error = resp.json().get("error")
                     if error == "authorization_pending":
@@ -241,11 +265,12 @@ class MicrosoftAuth:
                 # 非 400 的其他 HTTP 错误
                 raise MicrosoftAuthError(f"轮询令牌失败: {e}") from e
             except Exception as e:
-                raise MicrosoftAuthError(f"轮询令牌异常: {e}") from e
+                reason = _friendly_network_error(e) or str(e) or "未知网络错误"
+                raise MicrosoftAuthError(f"轮询令牌异常: {reason}") from e
 
         raise MicrosoftAuthError("设备码授权超时")
 
-    def get_token(self) -> tuple[str, str]:
+    async def get_token(self) -> tuple[str, str]:
         """
         如果认证失败则抛出 MicrosoftAuthError
         :return: (access_token, email)
@@ -259,37 +284,37 @@ class MicrosoftAuth:
             return str(access_token), email
 
         # 2. 尝试使用 refresh_token 刷新
-        refreshed = self._refresh_token()
+        refreshed = await self._refresh_token()
         if refreshed:
             return refreshed
 
         # 3. 执行设备码流程
-        return self._device_flow()
+        return await self._device_flow()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """如果拥有自己的客户端则关闭；否则不做任何操作"""
         if self._owns_client and hasattr(self, "_client"):
-            self._client.close()
+            await self._client.aclose()
 
-    def __enter__(self):
+    async def __aenter__(self) -> "MicrosoftAuth":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
 
 # ---------- Minecraft API 客户端 ----------
 class MinecraftClient:
-    def __init__(self, client: httpx.Client | None = None):
+    def __init__(self, client: httpx.AsyncClient | None = None):
         """
-        :param client: 可选的共享 httpx.Client 实例，若不提供则内部自行创建
+        :param client: 可选的共享 httpx.AsyncClient 实例，若不提供则内部自行创建
         """
         self._external_client = client
         if client is not None:
             self.client = client
             self._owns_client = False
         else:
-            self.client = httpx.Client(
+            self.client = httpx.AsyncClient(
                 http2=True,
                 timeout=httpx.Timeout(15, connect=10),
                 follow_redirects=True,
@@ -297,7 +322,7 @@ class MinecraftClient:
             )
             self._owns_client = True
 
-    def _get_xbox_tokens(self, ms_token: str) -> tuple[str, str]:
+    async def _get_xbox_tokens(self, ms_token: str) -> tuple[str, str]:
         """
         交换 Microsoft 令牌获取 Xbox Live 令牌和用户哈希
         :param ms_token: Microsoft Token
@@ -314,14 +339,14 @@ class MinecraftClient:
             "TokenType": "JWT"
         }
         try:
-            resp = self.client.post(live_url, json=live_payload)
+            resp = await self.client.post(live_url, json=live_payload)
             resp.raise_for_status()
             data = resp.json()
             return data["Token"], data["DisplayClaims"]["xui"][0]["uhs"]
         except Exception as e:
             raise XboxAuthError(e) from e
 
-    def _get_xsts_token(self, xbox_token: str) -> str:
+    async def _get_xsts_token(self, xbox_token: str) -> str:
         """
         交换 Xbox Live 令牌获取 XSTS 令牌
         :param xbox_token: Xbox Live Token
@@ -337,32 +362,32 @@ class MinecraftClient:
             "TokenType": "JWT"
         }
         try:
-            resp = self.client.post(xsts_url, json=xsts_payload)
+            resp = await self.client.post(xsts_url, json=xsts_payload)
             resp.raise_for_status()
             return resp.json()["Token"]
         except Exception as e:
             raise XSTSAuthError(e) from e
 
-    def get_minecraft_token(self, microsoft_token: str) -> tuple[str, float, int]:
+    async def get_minecraft_token(self, microsoft_token: str) -> tuple[str, float, int]:
         """
         完整认证链: Microsoft -> Xbox -> XSTS -> Minecraft
         :return: (access_token, 获取时间戳, 有效期秒数)
         """
-        xbox_token, user_hash = self._get_xbox_tokens(microsoft_token)
-        xsts_token = self._get_xsts_token(xbox_token)
+        xbox_token, user_hash = await self._get_xbox_tokens(microsoft_token)
+        xsts_token = await self._get_xsts_token(xbox_token)
 
         url = "https://api.minecraftservices.com/authentication/login_with_xbox"
         payload = {"identityToken": f"XBL3.0 x={user_hash};{xsts_token}"}
 
         try:
-            resp = self.client.post(url, json=payload)
+            resp = await self.client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
             return data["access_token"], time.time(), data.get("expires_in", 86400)
         except Exception as e:
             raise MinecraftAuthError(e) from e
 
-    def get_profile(self, minecraft_token: str) -> dict | None:
+    async def get_profile(self, minecraft_token: str) -> dict | None:
         """
         获取 Minecraft 档案，若未购买 Java 版则返回 None
         :param minecraft_token: Minecraft Token
@@ -375,7 +400,7 @@ class MinecraftClient:
             "Authorization": f"Bearer {minecraft_token}"
         }
         try:
-            resp = self.client.get(url, headers=headers)
+            resp = await self.client.get(url, headers=headers)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 404:
@@ -384,7 +409,7 @@ class MinecraftClient:
         except Exception as e:
             raise MinecraftAuthError(e) from e
 
-    def upload_skin(self, minecraft_token: str, variant: str, png_image: bytes) -> dict:
+    async def upload_skin(self, minecraft_token: str, variant: str, png_image: bytes) -> dict:
         """
         上传皮肤
         :param minecraft_token: Minecraft Token
@@ -418,13 +443,13 @@ class MinecraftClient:
         }
 
         try:
-            resp = self.client.post(url, content=request_body, headers=headers)
+            resp = await self.client.post(url, content=request_body, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
 
-    def reset_skin(self, minecraft_token: str) -> dict:
+    async def reset_skin(self, minecraft_token: str) -> dict:
         """
         重置为默认皮肤
         :param minecraft_token: Minecraft Token
@@ -436,13 +461,13 @@ class MinecraftClient:
             "Authorization": f"Bearer {minecraft_token}"
         }
         try:
-            resp = self.client.delete(url, headers=headers)
+            resp = await self.client.delete(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
 
-    def set_cape(self, minecraft_token: str, cape_id: str) -> dict:
+    async def set_cape(self, minecraft_token: str, cape_id: str) -> dict:
         """
         设置披风
         :param minecraft_token: Minecraft Token
@@ -457,13 +482,13 @@ class MinecraftClient:
             "Authorization": f"Bearer {minecraft_token}"
         }
         try:
-            resp = self.client.put(url, json=payload, headers=headers)
+            resp = await self.client.put(url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
 
-    def reset_cape(self, minecraft_token: str) -> dict:
+    async def reset_cape(self, minecraft_token: str) -> dict:
         """
         重置披风(或者说选择无披风)
         :param minecraft_token: Minecraft Token
@@ -475,13 +500,13 @@ class MinecraftClient:
             "Authorization": f"Bearer {minecraft_token}"
         }
         try:
-            resp = self.client.delete(url, headers=headers)
+            resp = await self.client.delete(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             raise UpdateSkinError(e) from e
 
-    def set_profile_name(self, minecraft_token: str, new_name: str) -> dict:
+    async def set_profile_name(self, minecraft_token: str, new_name: str) -> dict:
         """
         [!未测试, 是否能使用以及返回内容未知!]
         设置 Minecraft Java profile 名称
@@ -495,7 +520,7 @@ class MinecraftClient:
             "Authorization": f"Bearer {minecraft_token}"
         }
         try:
-            resp = self.client.put(url, headers=headers)
+            resp = await self.client.put(url, headers=headers)
             if resp.status_code == 400:
                 print(resp.json())
                 raise SetNameError("用户名无效")
@@ -507,16 +532,16 @@ class MinecraftClient:
         except Exception as e:
             raise SetNameError(e) from e
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """如果拥有自己的客户端则关闭，否则不执行任何操作"""
         if self._owns_client and hasattr(self, "client"):
-            self.client.close()
+            await self.client.aclose()
 
-    def __enter__(self):
+    async def __aenter__(self) -> "MinecraftClient":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
 
 # ---------- 多账户管理器（线程安全） ----------
@@ -546,7 +571,7 @@ class MicrosoftAuthManager:
         self.account_cache_path.mkdir(parents=True, exist_ok=True)
 
         # 共享 HTTP 客户端
-        self._shared_client = httpx.Client(
+        self._shared_client = httpx.AsyncClient(
             timeout=httpx.Timeout(15, connect=10),
             verify=verify,
             http2=True,
@@ -591,9 +616,10 @@ class MicrosoftAuthManager:
             encoding="utf-8"
         )
 
-    def _get_microsoft_token(self, account_id: str) -> str:
+    async def _get_microsoft_token(self, account_id: str) -> str:
         """获取 Microsoft 访问令牌（仅令牌字符串）"""
-        return self.microsoft_clients[account_id].get_token()[0]
+        token, _ = await self.microsoft_clients[account_id].get_token()
+        return token
 
     # ---------- 公开接口 ----------
     def get_microsoft_accounts(self) -> dict:
@@ -604,27 +630,27 @@ class MicrosoftAuthManager:
         with self._lock:
             return deepcopy(self.microsoft_accounts)
 
-    def add_microsoft_account(self) -> str:
+    async def add_microsoft_account(self) -> str:
         """
         添加一个新 Microsoft 账户
         :return: account_id
         """
+        account_id = uuid4().hex
+        ms_client = MicrosoftAuth(
+            client_id=self.client_id,
+            cache_file=self.account_cache_path / f"{account_id}.json",
+            on_device_code=self.on_device_code,
+            verify=self.verify,
+            client=self._shared_client,              # 共享客户端
+        )
+        token, email = await ms_client.get_token()
+
+        mc_token_tuple = await self.minecraft_client.get_minecraft_token(token)
+        mc_profile = await self.minecraft_client.get_profile(mc_token_tuple[0])
+        if not mc_profile:
+            raise MinecraftAuthError("未购买 Minecraft Java 版")
+
         with self._lock:
-            account_id = uuid4().hex
-            ms_client = MicrosoftAuth(
-                client_id=self.client_id,
-                cache_file=self.account_cache_path / f"{account_id}.json",
-                on_device_code=self.on_device_code,
-                verify=self.verify,
-                client=self._shared_client,              # 共享客户端
-            )
-            token, email = ms_client.get_token()
-
-            mc_token_tuple = self.minecraft_client.get_minecraft_token(token)
-            mc_profile = self.minecraft_client.get_profile(mc_token_tuple[0])
-            if not mc_profile:
-                raise MinecraftAuthError("未购买 Minecraft Java 版")
-
             self.microsoft_accounts[account_id] = {
                 "AccountId": account_id,
                 "Email": email,
@@ -633,7 +659,7 @@ class MicrosoftAuthManager:
             self.microsoft_clients[account_id] = ms_client
             self.minecraft_tokens[account_id] = mc_token_tuple
             self._save_account_list()
-            return account_id
+        return account_id
 
     def del_microsoft_account(self, account_id: str) -> None:
         """
@@ -649,53 +675,50 @@ class MicrosoftAuthManager:
             (self.account_cache_path / f"{account_id}.json").unlink(missing_ok=True)
             self._save_account_list()
 
-    def get_minecraft_token(self, account_id: str, refresh_profile: bool = True) -> str:
+    async def get_minecraft_token(self, account_id: str, refresh_profile: bool = True) -> str:
         """
         获取 Minecraft 访问令牌，自动刷新过期令牌
         :param account_id: 账户 ID
         :param refresh_profile: 若令牌被刷新，是否同时更新档案
         :return: Minecraft 访问令牌字符串
         """
+        # 内存读取（持锁）
         with self._lock:
             if account_id not in self.microsoft_accounts:
                 raise KeyError(f"账户 '{account_id}' 不存在")
+            cached = self.minecraft_tokens.get(account_id)
 
-            # 如果内存中没有令牌记录，直接获取新令牌
-            if account_id not in self.minecraft_tokens:
-                ms_token = self._get_microsoft_token(account_id)
-                mc_token_tuple = self.minecraft_client.get_minecraft_token(ms_token)
-                self.minecraft_tokens[account_id] = mc_token_tuple
-                mc_token = mc_token_tuple[0]
-            else:
-                mc_token, times, expires_in = self.minecraft_tokens[account_id]
-                # 如果剩余有效期 > 300 秒，直接返回
-                if time.time() - times < expires_in - 300:
-                    return mc_token
-                # 否则刷新
-                ms_token = self._get_microsoft_token(account_id)
-                mc_token_tuple = self.minecraft_client.get_minecraft_token(ms_token)
-                self.minecraft_tokens[account_id] = mc_token_tuple
-                mc_token = mc_token_tuple[0]
+        # 令牌仍有效则直接返回
+        if cached is not None:
+            mc_token, times, expires_in = cached
+            if time.time() - times < expires_in - 300:
+                return mc_token
 
-        # 解锁后执行档案刷新（若需要）
+        # 令牌缺失或已过期，在锁外重新获取
+        ms_token = await self._get_microsoft_token(account_id)
+        mc_token_tuple = await self.minecraft_client.get_minecraft_token(ms_token)
+        mc_token = mc_token_tuple[0]
+        with self._lock:
+            self.minecraft_tokens[account_id] = mc_token_tuple
+
         if refresh_profile:
             try:
-                self.refresh_profile(account_id)
+                await self.refresh_profile(account_id)
             except Exception:
                 pass
         return mc_token
 
-    def refresh_profile(self, account_id: str) -> dict:
+    async def refresh_profile(self, account_id: str) -> dict:
         """
         刷新指定账户的档案（玩家名、皮肤等）
         :param account_id: 账户 ID
         :return: {"Profile": ..., "Skin": ...}
         """
         # 获取有效令牌（不触发递归刷新）
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
 
         # 获取最新档案
-        profile = self.minecraft_client.get_profile(mc_token)
+        profile = await self.minecraft_client.get_profile(mc_token)
         if not profile:
             raise MinecraftAuthError(f"无法获取账户 '{account_id}' 的档案")
 
@@ -705,7 +728,7 @@ class MicrosoftAuthManager:
 
         return {"Profile": profile}
 
-    def upload_skin(self, account_id: str, variant: str, png_image: bytes) -> dict:
+    async def upload_skin(self, account_id: str, variant: str, png_image: bytes) -> dict:
         """
         上传皮肤
         :param account_id: 账户 ID
@@ -713,38 +736,38 @@ class MicrosoftAuthManager:
         :param png_image: PNG Image
         :return: Profile
         """
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
-        return self.minecraft_client.upload_skin(mc_token, variant, png_image)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
+        return await self.minecraft_client.upload_skin(mc_token, variant, png_image)
 
-    def reset_skin(self, account_id: str) -> dict:
+    async def reset_skin(self, account_id: str) -> dict:
         """
         重置皮肤为默认
         :param account_id: 账户 ID
         :return: Profile
         """
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
-        return self.minecraft_client.reset_skin(mc_token)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
+        return await self.minecraft_client.reset_skin(mc_token)
 
-    def set_cape(self, account_id: str, cape_id: str) -> dict:
+    async def set_cape(self, account_id: str, cape_id: str) -> dict:
         """
         设置披风
         :param account_id: 账户 ID
         :param cape_id: 披风 ID
         :return: Profile
         """
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
-        return self.minecraft_client.set_cape(mc_token, cape_id)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
+        return await self.minecraft_client.set_cape(mc_token, cape_id)
 
-    def reset_cape(self, account_id: str) -> dict:
+    async def reset_cape(self, account_id: str) -> dict:
         """
         重置披风(或者说选择无披风)
         :param account_id: 账户 ID
         :return: Profile
         """
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
-        return self.minecraft_client.reset_cape(mc_token)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
+        return await self.minecraft_client.reset_cape(mc_token)
 
-    def set_profile_name(self, account_id: str, new_name: str) -> dict:
+    async def set_profile_name(self, account_id: str, new_name: str) -> dict:
         """
         [!未测试, 是否能使用以及返回内容未知!]
         设置 Minecraft Java profile 名称
@@ -752,21 +775,21 @@ class MicrosoftAuthManager:
         :param new_name: 新名称
         :return: Profile?
         """
-        mc_token = self.get_minecraft_token(account_id, refresh_profile=False)
-        return self.minecraft_client.set_profile_name(mc_token, new_name)
+        mc_token = await self.get_minecraft_token(account_id, refresh_profile=False)
+        return await self.minecraft_client.set_profile_name(mc_token, new_name)
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         """释放共享 HTTP 客户端，并清理子客户端引用"""
         if hasattr(self, "_shared_client") and self._shared_client:
-            self._shared_client.close()
+            await self._shared_client.aclose()
             self._shared_client = None
         # 子客户端持有共享客户端的引用，无需再单独关闭
         self.minecraft_client = None
         # 清空 MicrosoftAuth 实例，避免持有已关闭的客户端引用
         self.microsoft_clients.clear()
 
-    def __enter__(self):
+    async def __aenter__(self) -> "MicrosoftAuthManager":
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.aclose()
