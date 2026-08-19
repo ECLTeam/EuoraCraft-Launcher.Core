@@ -7,7 +7,10 @@ import asyncio
 import base64
 import httpx
 import json
+import logging
 import time
+
+logger = logging.getLogger("EuoraCraft-Launcher.MicrosoftAuth")
 
 
 # ---------- 异常层次 ----------
@@ -63,7 +66,7 @@ def _friendly_network_error(exc: Exception, _depth: int = 0) -> str | None:
     if _depth > 8:
         return None
     if isinstance(exc, httpx.ConnectError):
-        return "无法连接到微软认证服务器，请检查网络连接；若已配置系统代理或 HTTP(S)_PROXY，请确认代理放通了微软登录域名，或先关闭代理后重试。"
+        return "无法连接到微软认证服务器，请检查网络连接；若已配置系统代理或 HTTP(S)_PROXY，可在设置中开启「忽略系统代理」后重试。"
     if isinstance(exc, httpx.TimeoutException):
         return "连接微软认证服务器超时，请检查网络连接后重试。"
     if isinstance(exc, httpx.TransportError):
@@ -165,6 +168,7 @@ class MicrosoftAuth:
         """
         refresh_token = self._cache.get("refresh_token")
         if not refresh_token:
+            logger.warning("Microsoft 令牌刷新失败: 缓存中缺少 refresh_token，请重新登录该账户")
             return None
 
         data = {
@@ -178,6 +182,7 @@ class MicrosoftAuth:
             if resp.status_code == 400:
                 # 仅当令牌被明确拒绝时清空缓存，网络等瞬时异常保留令牌以便重试
                 error = resp.json().get("error")
+                logger.warning("Microsoft 令牌刷新被拒绝: %s", error)
                 if error in {"invalid_grant", "unauthorized_client"}:
                     self._cache.clear()
                     self._save_cache()
@@ -190,8 +195,9 @@ class MicrosoftAuth:
                 claims = self._cache.get("id_token_claims", {})
                 email = claims.get("preferred_username") or claims.get("email") or ""
                 return token_data["access_token"], email
-        except Exception:
+        except Exception as e:
             # 网络等瞬时异常不清空缓存，避免一次失败导致账户永久失效
+            logger.warning("Microsoft 令牌刷新异常: %s", e)
             return None
         return None
 
