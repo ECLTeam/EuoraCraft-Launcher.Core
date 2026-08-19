@@ -41,7 +41,7 @@ class JvmArgumentBuilder:
     def _add_base_args(self) -> None:
         self.args.extend([
             f'"{self.java_path}"',
-            f"-Xms{self.use_ram}M",
+            f"-Xms256M",
             f"-Xmx{self.use_ram}M",
             "-Dstderr.encoding=UTF-8",
             "-Dstdout.encoding=UTF-8",
