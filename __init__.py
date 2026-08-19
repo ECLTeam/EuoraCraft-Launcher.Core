@@ -7,7 +7,7 @@ from .Core.GetGames import GetGames, VersionClassifier
 from .Core.InstancesManager import InstancesManager
 from .Core.Libs import find_version, get_file_sha1, name_to_path, name_to_uuid, unzip
 from .Core.LoaderInstaller import LoaderInstaller
-from .Core.MicrosoftAuth import MicrosoftAuthManager
+from .Core.MicrosoftAuth import AuthException, MicrosoftAuthManager, NetException
 from .Core.NetLibs import ApiUrlConfig, BaseApiClient, BmclApiUrl
 from .Core.YggdrasilAuth import YggdrasilClient as OriginalYggdrasilClient
 from .Utils.JavaScanner import JavaRuntime, JavaScanner
@@ -56,6 +56,7 @@ class YggdrasilClient(OriginalYggdrasilClient):
 
 __all__ = [
     "ApiUrlConfig",
+    "AuthException",
     "BaseApiClient",
     "BmclApiUrl",
     "Downloader",
@@ -68,6 +69,7 @@ __all__ = [
     "LaunchConfig",
     "LoaderInstaller",
     "MicrosoftAuthManager",
+    "NetException",
     "RateLimiter",
     "SearchMinecraft",
     "VersionClassifier",
