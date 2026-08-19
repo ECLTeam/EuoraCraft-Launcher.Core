@@ -100,7 +100,7 @@ class MicrosoftAuth:
         :param client: 可选的共享 httpx.AsyncClient 实例，若不提供则内部自行创建
         """
         self.client_id = client_id
-        self.scope = ["XboxLive.signin"]
+        self.scope = ["XboxLive.signin", "offline_access", "openid", "profile", "email"]
         self.cache_file = Path(cache_file) if cache_file else None
         self.verify = verify
         self._device_code_callback = on_device_code or (
@@ -639,10 +639,20 @@ class MicrosoftAuthManager:
             encoding="utf-8"
         )
 
-    async def _get_microsoft_token(self, account_id: str) -> str:
-        """获取 Microsoft 访问令牌（仅令牌字符串），已有账户禁止进入设备码流程"""
-        token, _ = await self.microsoft_clients[account_id].get_token(allow_device_flow=False)
-        return token
+    async def _get_microsoft_token(self, account_id: str) -> tuple[str, str]:
+        """
+        获取 Microsoft 访问令牌，已有账户禁止进入设备码流程。
+
+        :param account_id: 账户 ID
+        :return: (access_token, email)，email 为空表示 ID token 未提供该 claim
+        """
+        token, email = await self.microsoft_clients[account_id].get_token(allow_device_flow=False)
+        if email:
+            with self._lock:
+                if self.microsoft_accounts.get(account_id, {}).get("Email") != email:
+                    self.microsoft_accounts[account_id]["Email"] = email
+                    self._save_account_list()
+        return token, email
 
     # ---------- 公开接口 ----------
     def get_microsoft_accounts(self) -> dict:
@@ -718,7 +728,7 @@ class MicrosoftAuthManager:
                 return mc_token
 
         # 令牌缺失或已过期，在锁外重新获取
-        ms_token = await self._get_microsoft_token(account_id)
+        ms_token, _ = await self._get_microsoft_token(account_id)
         mc_token_tuple = await self.minecraft_client.get_minecraft_token(ms_token)
         mc_token = mc_token_tuple[0]
         with self._lock:
