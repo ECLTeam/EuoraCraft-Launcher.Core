@@ -798,7 +798,11 @@ class MicrosoftAuthManager:
     async def aclose(self) -> None:
         """释放共享 HTTP 客户端，并清理子客户端引用"""
         if hasattr(self, "_shared_client") and self._shared_client:
-            await self._shared_client.aclose()
+            try:
+                await self._shared_client.aclose()
+            except Exception:
+                # 进程退出时原事件循环可能已关闭，连接交由系统回收
+                pass
             self._shared_client = None
         # 子客户端持有共享客户端的引用，无需再单独关闭
         self.minecraft_client = None
