@@ -175,6 +175,13 @@ class MicrosoftAuth:
         }
         try:
             resp = await self._client.post(self.TOKEN_URL, data=data)
+            if resp.status_code == 400:
+                # 仅当令牌被明确拒绝时清空缓存，网络等瞬时异常保留令牌以便重试
+                error = resp.json().get("error")
+                if error in {"invalid_grant", "unauthorized_client"}:
+                    self._cache.clear()
+                    self._save_cache()
+                return None
             resp.raise_for_status()
             token_data = resp.json()
             if "access_token" in token_data:
@@ -184,9 +191,8 @@ class MicrosoftAuth:
                 email = claims.get("preferred_username") or claims.get("email") or ""
                 return token_data["access_token"], email
         except Exception:
-            # 刷新失败，清空缓存（防止反复尝试）
-            self._cache.clear()
-            self._save_cache()
+            # 网络等瞬时异常不清空缓存，避免一次失败导致账户永久失效
+            return None
         return None
 
     def _update_cache(self, token_data: dict) -> None:
