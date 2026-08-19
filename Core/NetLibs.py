@@ -361,7 +361,8 @@ class BaseApiClient:
                 f"https://files.minecraftforge.net/net/minecraftforge/forge/index_{game_version}.html"
             )
             parser = _ForgeVersionParser()
-            parser.feed(get_html)
+            # Python 3.13 的 HTMLParser.feed 只接受 str，需先解码 bytes
+            parser.feed(get_html.decode("utf-8", "replace"))
             for version in parser.versions:
                 versions.append({
                     "LoaderVersion": version,
