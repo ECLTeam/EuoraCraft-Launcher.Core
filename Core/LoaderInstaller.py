@@ -69,6 +69,7 @@ class LoaderInstaller:
         if download_list:
             downloader = Downloader(
                 download_list,
+                skip_preflight=True,
                 progress_callback=lambda done, total: self.log_callback(f"[Downloader] 进度: {done}/{total} ({done / total:.2%})"),
                 speed_callback=lambda sp: self.log_callback(f"[Downloader] 速度: {sp:.2f} MB/s")
             )
