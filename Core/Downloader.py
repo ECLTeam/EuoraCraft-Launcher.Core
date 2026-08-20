@@ -272,7 +272,7 @@ class Downloader:
             self.pending_entries = []
             return
 
-        async with httpx.AsyncClient(http2=True, timeout=10.0, headers=self.headers) as client:
+        async with httpx.AsyncClient(http2=True, timeout=10.0, headers=self.headers, follow_redirects=True) as client:
             # 创建所有 HEAD 任务
             tasks = {}
             for url, path in to_check:
@@ -660,7 +660,7 @@ class Downloader:
         if self.loop is None:
             self.loop = asyncio.get_running_loop()
 
-        self.client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(15, connect=5), headers=self.headers)
+        self.client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(15, connect=5), headers=self.headers, follow_redirects=True)
 
         # 预检或跳过预检
         if self.skip_preflight:
