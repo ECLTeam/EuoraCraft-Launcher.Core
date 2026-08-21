@@ -67,7 +67,8 @@ class InstancesManager:
         std_in: bool = False,
         log_callback: Callable[[str, str], None] | None = None,
         exit_callback: Callable[[int, str], None] | None = None,
-        block_thread: bool = False
+        block_thread: bool = False,
+        env: dict[str, str] | None = None
     ) -> tuple[str, subprocess.Popen]:
         """
         创建一个新的子进程实例，所有输出（stdout+stderr）合并到 stdout
@@ -80,6 +81,7 @@ class InstancesManager:
         :param log_callback: 回调 (log: str, instance_id: str) -> None
         :param exit_callback: 回调 (exit_code: int, instance_id: str) -> None
         :param block_thread: 是否阻塞调用线程直到子进程退出
+        :param env: 附加环境变量，None 时继承父进程环境
         :return: (实例ID(uuid4.hex), subprocess.Popen)
         """
         log_callback = log_callback or self._noop
@@ -97,7 +99,8 @@ class InstancesManager:
             start_new_session=new_session,
             text=True,
             encoding="utf-8",
-            errors="ignore"
+            errors="ignore",
+            env=env
         )
 
         # 只启动一个 stdout 读取线程
