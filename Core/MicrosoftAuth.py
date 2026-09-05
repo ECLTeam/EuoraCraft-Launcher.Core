@@ -10,6 +10,8 @@ import json
 import logging
 import time
 
+from ECL.utils.files import atomic_write_text
+
 logger = logging.getLogger("EuoraCraft-Launcher.MicrosoftAuth")
 
 
@@ -141,13 +143,12 @@ class MicrosoftAuth:
                 self._cache = {}
 
     def _save_cache(self) -> None:
-        """持久化缓存到文件"""
+        """持久化缓存到文件（原子替换，避免中断截断导致登录态丢失）"""
         if self.cache_file and self._cache:
             try:
-                with self.cache_file.open("w", encoding="utf-8") as f:
-                    json.dump(self._cache, f, indent=2)
-            except OSError:
-                pass
+                atomic_write_text(self.cache_file, json.dumps(self._cache, indent=2, ensure_ascii=False))
+            except OSError as exc:
+                logger.error("持久化 Microsoft 账户令牌缓存失败: %s", exc)
 
     @staticmethod
     def _parse_id_token(id_token: str) -> dict:
@@ -617,7 +618,11 @@ class MicrosoftAuthManager:
         """从文件加载账户列表，重建 MicrosoftAuth 客户端"""
         if not self.account_list_file.is_file():
             return
-        data = json.loads(self.account_list_file.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(self.account_list_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("读取 Microsoft 账户列表失败，将使用空列表: %s", exc)
+            return
         for account_id, info in data.items():
             try:
                 ms_client = MicrosoftAuth(
@@ -633,10 +638,10 @@ class MicrosoftAuthManager:
                 pass
 
     def _save_account_list(self) -> None:
-        """保存账户列表到文件"""
-        self.account_list_file.write_text(
+        """保存账户列表到文件（原子替换，避免中断截断导致账户丢失）"""
+        atomic_write_text(
+            self.account_list_file,
             json.dumps(self.microsoft_accounts, indent=2, ensure_ascii=False),
-            encoding="utf-8"
         )
 
     async def _get_microsoft_token(self, account_id: str) -> tuple[str, str]:
