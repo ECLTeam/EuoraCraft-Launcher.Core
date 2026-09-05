@@ -331,7 +331,8 @@ class PlaceholderReplacer:
     def _build_standard_replacements(self) -> dict[str, str]:
         """构建除 classpath 和 version_name 外的所有占位符映射"""
         game_dir = Path(self.config.game_path) / "versions"
-        if not self.version_isolation:
+        # 版本隔离=开 时使用独立的 versions/<版本名>/ 数据目录
+        if self.version_isolation:
             game_dir = game_dir / self.config.version_name
 
         user_type = self.config.user_type
