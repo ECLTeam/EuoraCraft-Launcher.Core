@@ -15,7 +15,8 @@ class JvmArgumentBuilder:
         use_ram: int,
         use_gc: str = "G1GC",
         authlib_path: Path | str | None = None,
-        yggdrasil_api: str | None = None
+        yggdrasil_api: str | None = None,
+        lock_memory: bool = False
     ):
         """
         初始化
@@ -25,6 +26,7 @@ class JvmArgumentBuilder:
         :param use_gc: Jvm 使用什么 GC, 如 "G1GC" 或 "ZGC"
         :param authlib_path: authlib-injector.jar 路径
         :param yggdrasil_api: 提供 Yggdrasil 登录的网站 URL
+        :param lock_memory: 是否锁定初始堆等于最大堆(-Xms=-Xmx)
         """
         self.java_path = Path(java_path)
         self.version_name = version_name
@@ -32,6 +34,7 @@ class JvmArgumentBuilder:
         self.use_gc = use_gc
         self.authlib_path = Path(authlib_path) if authlib_path else None
         self.yggdrasil_api = yggdrasil_api
+        self.lock_memory = lock_memory
 
         self.system = platform.system()
         self.args = []
@@ -39,9 +42,11 @@ class JvmArgumentBuilder:
         self._add_base_args()
 
     def _add_base_args(self) -> None:
+        # 锁定内存时初始堆与最大堆一致；否则初始堆固定为 256M，随负载动态扩容。
+        initial_heap = self.use_ram if self.lock_memory else 256
         self.args.extend([
             f'"{self.java_path}"',
-            f"-Xms256M",
+            f"-Xms{initial_heap}M",
             f"-Xmx{self.use_ram}M",
             "-Dstderr.encoding=UTF-8",
             "-Dstdout.encoding=UTF-8",
@@ -241,6 +246,8 @@ class LaunchConfig:
     """user_type 非 "legacy" 登录需要添加 Token 令牌"""
     use_gc: str = "G1GC"
     """Jvm 使用什么 GC, 如 "G1GC" 或 "ZGC" """
+    lock_memory: bool = False
+    """是否锁定初始堆等于最大堆(-Xms=-Xmx)"""
     launcher_name: str = "ECL"
     """启动器名称"""
     launcher_version: str = "0.11.45"
@@ -407,7 +414,8 @@ def build_minecraft_cmd(config: LaunchConfig) -> str:
         use_ram=config.use_ram,
         use_gc=config.use_gc,
         authlib_path=authlib_path,
-        yggdrasil_api=yggdrasil_api
+        yggdrasil_api=yggdrasil_api,
+        lock_memory=config.lock_memory
     )
 
     version_json = json.loads(

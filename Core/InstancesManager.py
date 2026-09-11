@@ -2,8 +2,28 @@ from typing import Callable
 from pathlib import Path
 from uuid import uuid4
 import subprocess
+import sys
 import threading
 import time
+
+import psutil
+
+# Windows 进程优先级名称到 psutil 优先级类的映射。
+_WIN_PRIORITY_CLASSES: dict[str, int] = {
+    "idle": psutil.IDLE_PRIORITY_CLASS,
+    "below_normal": psutil.BELOW_NORMAL_PRIORITY_CLASS,
+    "normal": psutil.NORMAL_PRIORITY_CLASS,
+    "above_normal": psutil.ABOVE_NORMAL_PRIORITY_CLASS,
+    "high": psutil.HIGH_PRIORITY_CLASS,
+}
+# POSIX 优先级名称到 nice 值的映射；数值越小优先级越高。
+_POSIX_PRIORITY_NICE: dict[str, int] = {
+    "idle": 19,
+    "below_normal": 10,
+    "normal": 0,
+    "above_normal": -5,
+    "high": -10,
+}
 
 class InstancesManager:
     def __init__(
@@ -68,7 +88,8 @@ class InstancesManager:
         log_callback: Callable[[str, str], None] | None = None,
         exit_callback: Callable[[int, str], None] | None = None,
         block_thread: bool = False,
-        env: dict[str, str] | None = None
+        env: dict[str, str] | None = None,
+        priority: str = "normal"
     ) -> tuple[str, subprocess.Popen]:
         """
         创建一个新的子进程实例，所有输出（stdout+stderr）合并到 stdout
@@ -82,6 +103,7 @@ class InstancesManager:
         :param exit_callback: 回调 (exit_code: int, instance_id: str) -> None
         :param block_thread: 是否阻塞调用线程直到子进程退出
         :param env: 附加环境变量，None 时继承父进程环境
+        :param priority: 进程优先级: idle / below_normal / normal / above_normal / high
         :return: (实例ID(uuid4.hex), subprocess.Popen)
         """
         log_callback = log_callback or self._noop
@@ -102,6 +124,7 @@ class InstancesManager:
             errors="ignore",
             env=env
         )
+        self._apply_priority(proc, priority)
 
         # 只启动一个 stdout 读取线程
         t_out = threading.Thread(
@@ -125,6 +148,23 @@ class InstancesManager:
             proc.wait()
 
         return instance_id, proc
+
+    @staticmethod
+    def _apply_priority(proc: subprocess.Popen, priority: str) -> None:
+        # 设置子进程优先级；越权或平台不支持时静默忽略，避免启动失败。
+        is_windows = sys.platform == "win32"
+        # Windows 用优先级类；POSIX 用 nice 值。
+        target = (
+            _WIN_PRIORITY_CLASSES.get(priority)
+            if is_windows
+            else _POSIX_PRIORITY_NICE.get(priority)
+        )
+        if target is None or target == _WIN_PRIORITY_CLASSES["normal"]:
+            return
+        try:
+            psutil.Process(proc.pid).nice(target)
+        except (psutil.Error, OSError, ValueError):
+            pass
 
     # ---------- 标准输入 ----------
     def send_stdin(self, instance_id: str, data: str) -> bool:
