@@ -181,12 +181,15 @@ class MicrosoftAuth:
         try:
             resp = await self._client.post(self.TOKEN_URL, data=data)
             if resp.status_code == 400:
-                # 仅当令牌被明确拒绝时清空缓存，网络等瞬时异常保留令牌以便重试
+                # 令牌被明确拒绝。刷新令牌已失效，但若访问令牌仍在有效期内则保留缓存，
+                # 让账户继续可用直到其过期；否则清空缓存需重新登录。
                 error = resp.json().get("error")
                 logger.warning("Microsoft 令牌刷新被拒绝: %s", error)
                 if error in {"invalid_grant", "unauthorized_client"}:
-                    self._cache.clear()
-                    self._save_cache()
+                    access_expires = float(self._cache.get("expires_at", 0) or 0)
+                    if not self._cache.get("access_token") or time.time() >= access_expires:
+                        self._cache.clear()
+                        self._save_cache()
                 return None
             resp.raise_for_status()
             token_data = resp.json()
