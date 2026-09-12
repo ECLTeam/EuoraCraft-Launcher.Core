@@ -248,7 +248,7 @@ class Downloader:
         :param path: 本地保存路径。
         :return: (url, path, content_length)
         """
-        resp = await client.head(url)
+        resp = await client.head(url, follow_redirects=True)
         resp.raise_for_status()
         size = int(resp.headers.get("content-length", 0))
         return url, path, size
@@ -276,7 +276,14 @@ class Downloader:
 
         # 下载代理由启动器通过 ECL_DOWNLOAD_PROXY 下发，与启动器网络代理相互独立
         download_proxy = os.environ.get("ECL_DOWNLOAD_PROXY") or None
-        async with httpx.AsyncClient(http2=True, timeout=10.0, headers=self.headers, follow_redirects=True, proxy=download_proxy) as client:
+        async with httpx.AsyncClient(
+            http2=True,
+            timeout=10.0,
+            headers=self.headers,
+            follow_redirects=True,
+            proxy=download_proxy,
+            trust_env=False,
+        ) as client:
             # 创建所有 HEAD 任务
             tasks = {}
             for url, path in to_check:
@@ -391,7 +398,7 @@ class Downloader:
             headers = self.headers.copy()
             headers["Range"] = f"bytes={start}-{end}"
             async with self.client.stream(
-                "GET", url, headers=headers, timeout=30.0
+                "GET", url, headers=headers, timeout=30.0, follow_redirects=True
             ) as response:
                 response.raise_for_status()
                 if response.status_code != 206:
@@ -460,7 +467,7 @@ class Downloader:
             await self.pause_event.wait()
 
             chunk_size = 1 * 1024 * 1024  # 1MB
-            async with self.client.stream("GET", url, timeout=15.0) as response:
+            async with self.client.stream("GET", url, timeout=15.0, follow_redirects=True) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
                 real_size = int(content_length) if content_length is not None else 0
@@ -527,7 +534,7 @@ class Downloader:
         if file_size is None:
             # 发送 HEAD 请求获取大小和 Accept-Ranges
             try:
-                head_resp = await self.client.head(url)
+                head_resp = await self.client.head(url, follow_redirects=True)
                 head_resp.raise_for_status()
                 content_length = head_resp.headers.get("content-length")
                 if content_length:
@@ -665,7 +672,14 @@ class Downloader:
             self.loop = asyncio.get_running_loop()
 
         download_proxy = os.environ.get("ECL_DOWNLOAD_PROXY") or None
-        self.client = httpx.AsyncClient(http2=True, timeout=httpx.Timeout(15, connect=5), headers=self.headers, follow_redirects=True, proxy=download_proxy)
+        self.client = httpx.AsyncClient(
+            http2=True,
+            timeout=httpx.Timeout(15, connect=5),
+            headers=self.headers,
+            follow_redirects=True,
+            proxy=download_proxy,
+            trust_env=False,
+        )
 
         # 预检或跳过预检
         if self.skip_preflight:
