@@ -1,21 +1,29 @@
-from typing import Callable
-from pathlib import Path
-from uuid import uuid4
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
+from pathlib import Path
+from uuid import uuid4
 
 import psutil
 
+def _windows_priority_classes() -> dict[str, int]:
+    """仅在 Windows 读取 psutil 的平台专属优先级常量。"""
+    if sys.platform != "win32":
+        return {}
+    return {
+        "idle": psutil.IDLE_PRIORITY_CLASS,
+        "below_normal": psutil.BELOW_NORMAL_PRIORITY_CLASS,
+        "normal": psutil.NORMAL_PRIORITY_CLASS,
+        "above_normal": psutil.ABOVE_NORMAL_PRIORITY_CLASS,
+        "high": psutil.HIGH_PRIORITY_CLASS,
+    }
+
+
 # Windows 进程优先级名称到 psutil 优先级类的映射。
-_WIN_PRIORITY_CLASSES: dict[str, int] = {
-    "idle": psutil.IDLE_PRIORITY_CLASS,
-    "below_normal": psutil.BELOW_NORMAL_PRIORITY_CLASS,
-    "normal": psutil.NORMAL_PRIORITY_CLASS,
-    "above_normal": psutil.ABOVE_NORMAL_PRIORITY_CLASS,
-    "high": psutil.HIGH_PRIORITY_CLASS,
-}
+_WIN_PRIORITY_CLASSES = _windows_priority_classes()
 # POSIX 优先级名称到 nice 值的映射；数值越小优先级越高。
 _POSIX_PRIORITY_NICE: dict[str, int] = {
     "idle": 19,
@@ -159,12 +167,11 @@ class InstancesManager:
             if is_windows
             else _POSIX_PRIORITY_NICE.get(priority)
         )
-        if target is None or target == _WIN_PRIORITY_CLASSES["normal"]:
+        normal_priority = _WIN_PRIORITY_CLASSES.get("normal") if is_windows else _POSIX_PRIORITY_NICE["normal"]
+        if target is None or target == normal_priority:
             return
-        try:
+        with suppress(psutil.Error, OSError, ValueError):
             psutil.Process(proc.pid).nice(target)
-        except (psutil.Error, OSError, ValueError):
-            pass
 
     # ---------- 标准输入 ----------
     def send_stdin(self, instance_id: str, data: str) -> bool:
