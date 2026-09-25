@@ -187,6 +187,7 @@ class Downloader:
         # 状态存储
         self.completed_entries: set[tuple[str, str]] = set()
         self.failed_entries: set[tuple[str, str]] = set()
+        self.local_failed_paths: set[str] = set()
         self.pending_entries: list[tuple[str, Path, int | None]] = []
 
         # 进度相关
@@ -380,6 +381,7 @@ class Downloader:
         start: int,
         end: int,
         temp_chunk_path: Path,
+        target_path: Path,
     ) -> bool:
         """
         下载一个分片（字节范围 [start, end]）到临时分片文件。
@@ -389,6 +391,7 @@ class Downloader:
         :param start: 起始字节。
         :param end: 结束字节（包含）。
         :param temp_chunk_path: 临时分片文件路径。
+        :param target_path: 分片所属的最终文件路径，用于记录本地写入失败。
         :return: 成功返回 True，失败返回 False。
         """
         try:
@@ -427,6 +430,10 @@ class Downloader:
                 return False
 
             return True
+        except OSError:
+            self.local_failed_paths.add(str(target_path))
+            temp_chunk_path.unlink(missing_ok=True)
+            return False
         except Exception:
             temp_chunk_path.unlink(missing_ok=True)
             return False
@@ -505,6 +512,9 @@ class Downloader:
                 self.downloaded_bytes += 1
                 self._put_event("progress", self.downloaded_bytes, self.total_bytes)
             return True
+        except OSError:
+            self.local_failed_paths.add(str(path))
+            return False
         except Exception:
             return False
         finally:
@@ -559,7 +569,7 @@ class Downloader:
                 temp_path = path.with_suffix(f"{path.suffix}.part{i}.tmp")
                 chunk_paths.append(temp_path)
                 tasks.append(
-                    self._download_chunk(url, start, end, temp_path)
+                    self._download_chunk(url, start, end, temp_path, path)
                 )
 
             # 执行分片下载，支持单个分片重试
@@ -580,7 +590,7 @@ class Downloader:
                     start = idx * actual_chunk_size
                     end = min(start + actual_chunk_size - 1, file_size - 1)
                     tasks[idx] = self._download_chunk(
-                        url, start, end, chunk_paths[idx]  # type: ignore[assignment]
+                        url, start, end, chunk_paths[idx], path  # type: ignore[assignment]
                     )
 
             if success:

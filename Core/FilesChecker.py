@@ -109,13 +109,10 @@ class FilesChecker:
 
         # 如果本地索引不存在或 SHA1 不匹配，重新下载
         if Libs.get_file_sha1(local_index_path) != file_sha1:
-            try:
-                # 直接使用 Mojang 客户端获取索引数据
-                index_data = self.api_client.get_asset_index(asset_id, file_sha1)
-                local_index_path.parent.mkdir(parents=True, exist_ok=True)
-                local_index_path.write_text(json.dumps(index_data), encoding="utf-8")
-            except:
-                return download_list
+            # 资源索引请求失败必须传播给上层，否则下载任务会误报完成。
+            index_data = self.api_client.get_asset_index(asset_id, file_sha1)
+            local_index_path.parent.mkdir(parents=True, exist_ok=True)
+            local_index_path.write_text(json.dumps(index_data), encoding="utf-8")
         else:
             index_data = json.loads(local_index_path.read_text("utf-8"))
 
