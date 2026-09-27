@@ -1,5 +1,6 @@
-# ECLauncherCore
-ECL 的核心代码
+# EuoraCraft-Launcher.Core
+
+EuoraCraft-Launcher启动器的核心，包含实例的安装下载，启动，账户管理等核心功能
 
 ## 鸣谢
 - [`xphost008`](https://github.com/xphost008) - 给该核心作者 [`AEBC08`](https://github.com/AEBC08) 提供了很多帮助
