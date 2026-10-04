@@ -285,7 +285,7 @@ class SearchMinecraft:
                     continue
                 version_json: dict = json.loads(ver_json.read_text("utf-8"))
                 if "inheritsFrom" in version_json:
-                    game_jar = version_dir / f"{version_json["inheritsFrom"]}.jar"
+                    game_jar = version_dir / f"{version_json['inheritsFrom']}.jar"
                     if game_jar.is_file():
                         game_ver = self._find_game_ver_from_jar(game_jar)
                         if game_ver:

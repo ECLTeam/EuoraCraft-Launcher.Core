@@ -107,7 +107,7 @@ class LoaderInstaller:
                 classpath.append(str(lib_path))
 
             if processor["jar"] not in processor["classpath"]:
-                lib_path = self.game_path / "libraries" / f"{Libs.name_to_path(processor["jar"])}"
+                lib_path = self.game_path / "libraries" / f"{Libs.name_to_path(processor['jar'])}"
                 classpath.append(str(lib_path))
             cp = self.cp_delimiter.join(classpath)
 
