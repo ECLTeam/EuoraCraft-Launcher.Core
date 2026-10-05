@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import os
+import re
 
 # Windows 注册表支持（仅 Windows）
 try:
@@ -91,6 +92,25 @@ class JavaScanner:
         return list(self._found.values())
 
     # ---------- 缓存 ----------
+    @staticmethod
+    def probe(executable: Path | str) -> JavaRuntime | None:
+        """
+        有界探测一个 Java 可执行文件，不扫描系统或修改扫描缓存。
+
+        :param executable: Java 或 javaw 的可执行路径
+        :return: 成功校验的运行时；文件不存在、退出失败或信息不完整时返回 None
+        """
+        path = Path(executable).expanduser().resolve(strict=False)
+        if not path.is_file() or path.name.lower() not in {"java", "java.exe", "javaw.exe"}:
+            return None
+        probe_path = path.with_name("java.exe") if path.name.lower() == "javaw.exe" else path
+        if not probe_path.is_file():
+            return None
+        info = JavaScanner._extract_java_info(probe_path)
+        if info is None:
+            return None
+        return JavaRuntime(path, info["version"], info.get("vendor"), info["architecture"], info["is_jdk"])
+
     def _load_cache(self):
         if self.cache_file.is_file():
             try:
@@ -114,7 +134,7 @@ class JavaScanner:
         """生成缓存键：基于文件大小、修改时间，以及 release 文件或 rt.jar 的特征"""
         try:
             stat = exe_path.stat()
-            parts = [f"sz:{stat.st_size}", f"lm:{stat.st_mtime_ns}"]
+            parts = ["probe:2", f"sz:{stat.st_size}", f"lm:{stat.st_mtime_ns}"]
             java_home = exe_path.parent.parent
             release_file = java_home / "release"
             if release_file.is_file():
@@ -352,8 +372,11 @@ class JavaScanner:
                 text=True,
                 timeout=10,
                 encoding="utf-8",
-                errors="ignore"
+                errors="ignore",
+                **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform.startswith("win") else {})
             )
+            if proc.returncode != 0:
+                return None
             output = proc.stderr if proc.stderr else proc.stdout
             if not output:
                 return None
@@ -371,10 +394,13 @@ class JavaScanner:
                 "architecture": props.get("os.arch", "unknown"),
                 "is_jdk": False,
             }
+            if not re.match(r"^\d+(?:\.\d+)*", info["version"]) or info["architecture"] == "unknown":
+                return None
             java_home: str | None = props.get("java.home")
             if java_home:
                 home = Path(java_home)
-                if (home / "lib" / "tools.jar").exists() or (home / "lib" / "modules").exists():
+                compiler = "javac.exe" if sys.platform.startswith("win") else "javac"
+                if (java_exe.parent / compiler).is_file() or (home / "bin" / compiler).is_file():
                     info["is_jdk"] = True
             return info
         except Exception:
