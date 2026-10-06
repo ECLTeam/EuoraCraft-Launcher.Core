@@ -11,7 +11,7 @@
 
 from .Core.Downloader import Downloader, DynamicSemaphore, RateLimiter
 from .Core.ECLauncherCore import LaunchConfig, build_minecraft_cmd
-from .Core.Errors import CoreError
+from .Core.Errors import CoreError, GameDataError
 from .Core.FilesChecker import FilesChecker
 from .Core.GetGames import GetGames, VersionClassifier
 from .Core.InstancesManager import InstancesManager
@@ -21,6 +21,7 @@ from .Core.MicrosoftAuth import AuthException, MicrosoftAuthManager, NetExceptio
 from .Core.NetLibs import ApiUrlConfig, BaseApiClient, BmclApiUrl
 from .Core.YggdrasilAuth import YggdrasilClient as OriginalYggdrasilClient
 from .Data.instance_health import InstanceDiagnostic, InstanceInspection
+from .Data.instance_options import InstanceOptionsStore
 from .Data.mod_metadata import (
     LocalModMetadata,
     LocalModParser,
@@ -46,6 +47,8 @@ from .Data.nbt import (
     load,
     load_limited,
 )
+from .Data.resource_files import ResourceFileMetadata, ResourceFilePolicy
+from .Data.world_seeds import WorldSeedSource, WorldSeedStore
 from .Utils.JavaScanner import JavaRuntime, JavaScanner
 from .Utils.SearchMinecraft import SearchMinecraft
 
@@ -90,6 +93,7 @@ class YggdrasilClient(OriginalYggdrasilClient):
         response.raise_for_status()
         return response.json()
 
+
 __all__ = [
     "ApiUrlConfig",
     "AuthException",
@@ -105,9 +109,11 @@ __all__ = [
     "File",
     "FilesChecker",
     "Float",
+    "GameDataError",
     "GetGames",
     "InstanceDiagnostic",
     "InstanceInspection",
+    "InstanceOptionsStore",
     "InstancesManager",
     "Int",
     "IntArray",
@@ -127,10 +133,14 @@ __all__ = [
     "ModVersionPredicate",
     "NetException",
     "RateLimiter",
+    "ResourceFileMetadata",
+    "ResourceFilePolicy",
     "SearchMinecraft",
     "Short",
     "String",
     "VersionClassifier",
+    "WorldSeedSource",
+    "WorldSeedStore",
     "YggdrasilClient",
     "atomic_write_text",
     "build_minecraft_cmd",

@@ -3,10 +3,11 @@
 # ECLTeam © 2026 GPL-3.0 License
 # https://github.com/ECLTeam/EuoraCraft-Launcher.Core
 #
-# 文件作用：Core 领域异常基类，为调用方提供可选的稳定错误码。
+# 文件作用：Core 领域异常基类与 Minecraft 本地数据原语异常。
 #
 # 公开接口：
 #   - class CoreError — Core 各领域异常的公共基类。
+#   - class GameDataError — Minecraft 与实例本地数据原语的领域异常。
 # ============================================================
 
 from __future__ import annotations
@@ -31,4 +32,17 @@ class CoreError(Exception):
             self.error_code = error_code
 
 
-__all__ = ["CoreError"]
+class GameDataError(CoreError):
+    """
+    Minecraft 与实例本地数据原语的领域异常。
+
+    语义与主仓库的游戏服务异常一致：携带供上层转换为稳定错误码的
+    ``error_code``，使 IPC 边界能在不改变既有错误码的前提下识别数据层失败。
+    原语始终显式传入错误码，因此未传入时不设置该属性，交由调用方回退。
+
+    :param message: 面向用户的错误说明
+    :param error_code: 供前端识别的稳定错误码
+    """
+
+
+__all__ = ["CoreError", "GameDataError"]

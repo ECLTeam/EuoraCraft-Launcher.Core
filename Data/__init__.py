@@ -10,4 +10,7 @@
 #   - instance_health — 实例继承链与组件声明的只读健康检查。
 #   - mod_versions — 加载器版本约束判断。
 #   - mod_metadata — 本地模组声明与内嵌 Jar 解析。
+#   - world_seeds — 世界种子位置识别与多文件原子提交。
+#   - instance_options — 实例 options.txt 结构化读写。
+#   - resource_files — 本地资源文件的后缀、包元数据与投影结构校验。
 # ============================================================
