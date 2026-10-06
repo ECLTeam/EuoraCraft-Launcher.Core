@@ -1,11 +1,21 @@
-"""ECL Game 的稳定公开接口。"""
+# ============================================================
+# EuoraCraft Launcher Core
+# ECLTeam © 2026 GPL-3.0 License
+# https://github.com/ECLTeam/EuoraCraft-Launcher.Core
+#
+# 文件作用：Core 的稳定公开接口，主仓库只允许经本模块导入 Core 能力。
+#
+# 公开接口：
+#   - 见 __all__；新增能力必须同时加入 __all__ 才能被主仓库使用。
+# ============================================================
 
 from .Core.Downloader import Downloader, DynamicSemaphore, RateLimiter
 from .Core.ECLauncherCore import LaunchConfig, build_minecraft_cmd
+from .Core.Errors import CoreError
 from .Core.FilesChecker import FilesChecker
 from .Core.GetGames import GetGames, VersionClassifier
 from .Core.InstancesManager import InstancesManager
-from .Core.Libs import find_version, get_file_sha1, name_to_path, name_to_uuid, unzip
+from .Core.Libs import atomic_write_text, find_version, get_file_sha1, name_to_path, name_to_uuid, unzip
 from .Core.LoaderInstaller import LoaderInstaller
 from .Core.MicrosoftAuth import AuthException, MicrosoftAuthManager, NetException
 from .Core.NetLibs import ApiUrlConfig, BaseApiClient, BmclApiUrl
@@ -59,6 +69,7 @@ __all__ = [
     "AuthException",
     "BaseApiClient",
     "BmclApiUrl",
+    "CoreError",
     "Downloader",
     "DynamicSemaphore",
     "FilesChecker",
@@ -74,6 +85,7 @@ __all__ = [
     "SearchMinecraft",
     "VersionClassifier",
     "YggdrasilClient",
+    "atomic_write_text",
     "build_minecraft_cmd",
     "find_version",
     "get_file_sha1",

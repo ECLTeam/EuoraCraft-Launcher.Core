@@ -1,3 +1,16 @@
+# ============================================================
+# EuoraCraft Launcher Core
+# ECLTeam © 2026 GPL-3.0 License
+# https://github.com/ECLTeam/EuoraCraft-Launcher.Core
+#
+# 文件作用：微软账户 OAuth 认证与令牌维护，含 Xbox Live、XSTS 与 Minecraft 服务交换。
+#
+# 公开接口：
+#   - class MicrosoftAuthManager — 微软账户登录、令牌刷新与皮肤/名称操作。
+#   - class AuthException — 认证相关异常的基类。
+#   - class NetException — 网络请求异常的基类。
+# ============================================================
+
 from typing import Callable
 from threading import Lock
 from copy import deepcopy
@@ -10,13 +23,14 @@ import json
 import logging
 import time
 
-from ECL.utils.files import atomic_write_text
+from .Errors import CoreError
+from .Libs import atomic_write_text
 
 logger = logging.getLogger("EuoraCraft-Launcher.MicrosoftAuth")
 
 
 # ---------- 异常层次 ----------
-class BException(Exception):
+class BException(CoreError):
     """基础异常（未直接使用）"""
     pass
 

@@ -1,6 +1,21 @@
+# ============================================================
+# EuoraCraft Launcher Core
+# ECLTeam © 2026 GPL-3.0 License
+# https://github.com/ECLTeam/EuoraCraft-Launcher.Core
+#
+# 文件作用：Core 通用辅助函数，含路径换算、离线 UUID、校验、解压与原子写入。
+#
+# 公开接口：
+#   - atomic_write_bytes(path, data) -> None — 通过同目录临时文件原子替换文件内容。
+#   - atomic_write_text(path, data, encoding=…) -> None — 以原子替换方式写入文本文件。
+#   - class AtomicWritePolicy — 原子替换时的 Windows 短暂占用重试策略。
+#   - find_version / get_file_sha1 / name_to_path / name_to_uuid / unzip / parse_datetime 等既有辅助函数。
+# ============================================================
+
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from uuid import UUID
+from time import sleep
+from uuid import UUID, uuid4
 import hashlib
 import zipfile
 import json
@@ -164,3 +179,53 @@ def parse_datetime(time_str: str):  # 前端不建议用
             "Offset": converted_dt.utcoffset(),
         }
     }
+
+
+class AtomicWritePolicy:
+    """
+    原子替换文件时的 Windows 短暂占用重试策略。
+
+    延迟序列用于兼容杀毒软件和索引器短暂占用刚写入的文件。
+    """
+
+    windows_replace_retry_delays = (0.02, 0.05, 0.1, 0.2)
+
+
+def atomic_write_bytes(path: str | Path, data: bytes) -> None:
+    """
+    通过同目录临时文件实现原子替换文件内容。
+
+    临时文件与目标同目录，替换失败时保留原文件；重试耗尽后抛出异常，
+    由调用方决定回滚语义。
+
+    :param path: 需要写入的文件路径
+    :param data: 待持久化的字节数据
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(data)
+        for delay in (*AtomicWritePolicy.windows_replace_retry_delays, None):
+            try:
+                temporary.replace(destination)
+                break
+            except PermissionError:
+                if delay is None:
+                    raise
+                # Windows 上杀毒软件、索引器或另一条刚结束的替换操作可能短暂占用目标。
+                # 临时文件仍在同一目录，重试不会破坏原子替换语义。
+                sleep(delay)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: str | Path, data: str, encoding: str = "utf-8") -> None:
+    """
+    以原子替换方式写入文本文件。
+
+    :param path: 需要写入的文件路径
+    :param data: 待持久化的文本内容
+    :param encoding: 文本编码，默认 UTF-8
+    """
+    atomic_write_bytes(path, data.encode(encoding))
