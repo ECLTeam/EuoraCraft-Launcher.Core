@@ -7,7 +7,7 @@
 #
 # 公开接口：
 #   - nbt — NBT 二进制格式读写。
-#   - instance_health — 实例继承链与组件声明的只读健康检查。
+#   - instance_metadata — 实例继承元数据与组件声明的有界读取。
 #   - mod_versions — 加载器版本约束判断。
 #   - mod_metadata — 本地模组声明与内嵌 Jar 解析。
 #   - world_seeds — 世界种子位置识别与多文件原子提交。

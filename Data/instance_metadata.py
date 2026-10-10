@@ -3,11 +3,10 @@
 # ECLTeam © 2026 GPL-3.0 License
 # https://github.com/ECLTeam/EuoraCraft-Launcher.Core
 #
-# 文件作用：只读检查实例继承链、主 Jar 与组件声明，不修改损坏的用户文件。
+# 文件作用：有界读取实例继承元数据与组件声明，供 Java 选择和模组环境识别使用。
 #
 # 公开接口：
-#   - class InstanceDiagnostic — 描述实例健康问题及启动阻断程度。
-#   - class InstanceInspection — 保存继承链、组件与健康检查结果。
+#   - class InstanceMetadata — 保存已读取的继承元数据与加载器组件。
 # ============================================================
 from __future__ import annotations
 
@@ -21,27 +20,15 @@ from pydantic import JsonValue, TypeAdapter
 
 
 @dataclass(frozen=True, slots=True)
-class InstanceDiagnostic:
+class InstanceMetadata:
     """
-    保存稳定诊断码与相关版本名，不携带个人目录路径。
-    """
+    只读解析已存在的实例声明，提供继承文档与实际加载器组件。
 
-    code: str
-    version_id: str
-    severity: str
-
-
-@dataclass(frozen=True, slots=True)
-class InstanceInspection:
-    """
-    检查启动所需的本地声明，并保留全部实际组件。
-
-    缺失可从已声明客户端下载地址恢复的 Jar 为警告；缺失或损坏 JSON、
-    继承循环及无恢复来源的主 Jar 阻止启动。检查本身不下载或写入文件。
+    单个文件无法读取或继承链无效时停止遍历，保留已读取的声明。
+    本模块不判定实例是否允许启动，不下载或写入文件。
     """
 
     documents: tuple[dict[str, JsonValue], ...]
-    diagnostics: tuple[InstanceDiagnostic, ...]
     components: tuple[tuple[str, str], ...]
 
     json_adapter: ClassVar[TypeAdapter[JsonValue]] = TypeAdapter(JsonValue)
@@ -55,45 +42,33 @@ class InstanceInspection:
     )
 
     @classmethod
-    def inspect(cls, minecraft_root_path: Path, version_id: str) -> InstanceInspection:
+    def read(cls, minecraft_root_path: Path, version_id: str) -> InstanceMetadata:
         """
         在版本根目录边界内遍历继承链，最多读取 64 个有界 JSON。
 
         :param minecraft_root_path: 已解析的 Minecraft 根目录
         :param version_id: 实例目录名
-        :return: 只读检查结果；单个坏文件不会使目录清单丢失
+        :return: 已成功读取的元数据；无法读取的文件不会影响其他实例
         """
         documents: list[dict[str, JsonValue]] = []
-        diagnostics: list[InstanceDiagnostic] = []
-        names: list[str] = []
+        visited: set[str] = set()
         current = version_id
         while current:
-            if current in names or len(names) >= 64:
-                diagnostics.append(InstanceDiagnostic("inheritance_cycle", current, "error"))
+            if current in visited or len(visited) >= 64:
                 break
             if current in {".", ".."} or any(character in current for character in "/\\:"):
-                diagnostics.append(InstanceDiagnostic("invalid_inheritance", current, "error"))
                 break
-            names.append(current)
+            visited.add(current)
             json_path = minecraft_root_path / "versions" / current / f"{current}.json"
             document = cls._read_document(json_path)
             if document is None:
-                code = "missing_json" if not json_path.is_file() else "invalid_json"
-                if current != version_id and code == "missing_json":
-                    code = "missing_parent"
-                diagnostics.append(InstanceDiagnostic(code, current, "error"))
                 break
             documents.append(document)
             parent = document.get("inheritsFrom")
             if parent is not None and (not isinstance(parent, str) or not parent.strip()):
-                diagnostics.append(InstanceDiagnostic("invalid_inheritance", current, "error"))
                 break
             current = parent or ""
-        if documents and not any(issue.severity == "error" for issue in diagnostics):
-            cls._inspect_jar(minecraft_root_path, names, documents, diagnostics)
-            if not any(isinstance(document.get("mainClass"), str) for document in documents):
-                diagnostics.append(InstanceDiagnostic("metadata_unknown", version_id, "warning"))
-        return cls(tuple(documents), tuple(diagnostics), cls._components(documents))
+        return cls(tuple(documents), cls._components(documents))
 
     @classmethod
     def _read_document(cls, json_path: Path) -> dict[str, JsonValue] | None:
@@ -107,28 +82,6 @@ class InstanceInspection:
             return document if isinstance(document, dict) and isinstance(document.get("id"), str) else None
         except (OSError, ValueError):
             return None
-
-    @staticmethod
-    def _inspect_jar(
-        root: Path, names: list[str], documents: list[dict[str, JsonValue]], diagnostics: list[InstanceDiagnostic]
-    ) -> None:
-        """
-        接受继承父版本的主 Jar 和安装器复制在子目录的父版本 Jar。
-
-        客户端下载地址只说明现有启动流程可以补齐文件，不代表文件已下载。
-        """
-        candidates = [root / "versions" / name / f"{name}.jar" for name in names]
-        if len(names) > 1:
-            candidates.append(root / "versions" / names[0] / f"{names[1]}.jar")
-        if any(path.is_file() for path in candidates):
-            return
-        can_download = False
-        for document in documents:
-            downloads = document.get("downloads")
-            client = downloads.get("client") if isinstance(downloads, dict) else None
-            url = client.get("url") if isinstance(client, dict) else None
-            can_download |= isinstance(url, str) and url.startswith(("https://", "http://"))
-        diagnostics.append(InstanceDiagnostic("missing_jar", names[0], "warning" if can_download else "error"))
 
     @classmethod
     def _components(cls, documents: list[dict[str, JsonValue]]) -> tuple[tuple[str, str], ...]:
@@ -145,22 +98,6 @@ class InstanceInspection:
                     if name.casefold().startswith(prefix.casefold()):
                         components[component] = name[len(prefix) :].split(":")[0]
         return tuple(components.items())
-
-    def to_health(self) -> dict[str, JsonValue]:
-        """
-        输出稳定健康协议，启动阻断由诊断严重程度派生。
-
-        :return: 健康状态、是否允许启动与具体诊断
-        """
-        can_launch = not any(issue.severity == "error" for issue in self.diagnostics)
-        return {
-            "status": "blocked" if not can_launch else "warning" if self.diagnostics else "healthy",
-            "canLaunch": can_launch,
-            "diagnostics": [
-                {"code": issue.code, "versionId": issue.version_id, "severity": issue.severity}
-                for issue in self.diagnostics
-            ],
-        }
 
     def mod_environment(self, fallback_minecraft_version: str | None = None) -> dict[str, str | None]:
         """

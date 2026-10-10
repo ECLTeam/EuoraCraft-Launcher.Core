@@ -20,7 +20,7 @@ from .Core.LoaderInstaller import LoaderInstaller
 from .Core.MicrosoftAuth import AuthException, MicrosoftAuthManager, NetException
 from .Core.NetLibs import ApiUrlConfig, BaseApiClient, BmclApiUrl
 from .Core.YggdrasilAuth import YggdrasilClient as OriginalYggdrasilClient
-from .Data.instance_health import InstanceDiagnostic, InstanceInspection
+from .Data.instance_metadata import InstanceMetadata
 from .Data.instance_options import InstanceOptionsStore
 from .Data.mod_metadata import (
     LocalModMetadata,
@@ -111,8 +111,7 @@ __all__ = [
     "Float",
     "GameDataError",
     "GetGames",
-    "InstanceDiagnostic",
-    "InstanceInspection",
+    "InstanceMetadata",
     "InstanceOptionsStore",
     "InstancesManager",
     "Int",
