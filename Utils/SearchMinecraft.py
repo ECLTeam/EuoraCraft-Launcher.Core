@@ -92,9 +92,6 @@ class SearchMinecraft:
             return strings
         return read_constant_pool_utf8_strings(_class_stream)
 
-    @staticmethod
-    def _find_ver_from_server_class(_class_stream):
-        pass
 
     def _find_game_ver_from_jar(self, jar_path: Path | str) -> str | None:
         with zipfile.ZipFile(jar_path, "r") as zf:
