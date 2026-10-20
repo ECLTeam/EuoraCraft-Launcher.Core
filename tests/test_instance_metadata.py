@@ -40,3 +40,18 @@ def test_unreadable_metadata_returns_empty_result_without_writing(tmp_path: Path
     version_file.write_text(content, encoding="utf-8")
     assert InstanceMetadata.read(tmp_path, "test") == InstanceMetadata((), ())
     assert version_file.read_text(encoding="utf-8") == content
+
+
+def test_from_documents_parses_without_disk_and_copies_inputs() -> None:
+    document = {"id": "1.21", "libraries": [{"name": "net.fabricmc:fabric-loader:0.16"}]}
+    metadata = InstanceMetadata.from_documents((document,))
+    document["libraries"][0]["name"] = "changed"
+    assert metadata.components == (("Fabric", "0.16"),)
+    assert metadata.documents[0]["libraries"][0]["name"] == "net.fabricmc:fabric-loader:0.16"
+    assert metadata.mod_environment()["minecraft"] == "1.21"
+
+
+@pytest.mark.parametrize("documents", [[], ({"id": 1},), tuple({"id": "x"} for _ in range(65))])
+def test_from_documents_rejects_invalid_input(documents) -> None:
+    with pytest.raises(ValueError):
+        InstanceMetadata.from_documents(documents)

@@ -68,7 +68,26 @@ class InstanceMetadata:
             if parent is not None and (not isinstance(parent, str) or not parent.strip()):
                 break
             current = parent or ""
-        return cls(tuple(documents), cls._components(documents))
+        return cls.from_documents(tuple(documents))
+
+    @classmethod
+    def from_documents(cls, documents: tuple[dict[str, JsonValue], ...]) -> InstanceMetadata:
+        """
+        从调用方已经受控读取的继承文档解析组件，不访问文件或修改传入集合。
+
+        :param documents: 从目标到父版本排列的有界 JSON 文档
+        :return: 独立保存文档与组件的只读元数据
+        :raises ValueError: 文档数量、对象类型或版本标识无效时抛出
+        """
+        if not isinstance(documents, tuple) or len(documents) > 64:
+            raise ValueError("实例元数据数量无效")
+        copied = []
+        for document in documents:
+            validated = cls.json_adapter.validate_python(document)
+            if not isinstance(validated, dict) or not isinstance(validated.get("id"), str):
+                raise ValueError("实例元数据必须包含版本标识")
+            copied.append(validated)
+        return cls(tuple(copied), cls._components(copied))
 
     @classmethod
     def _read_document(cls, json_path: Path) -> dict[str, JsonValue] | None:
