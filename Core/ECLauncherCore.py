@@ -260,7 +260,7 @@ class LaunchConfig:
     """Minecraft 窗口宽度(px)"""
     window_height: int | str = 480
     """Minecraft 窗口高度(px)"""
-    authlib_path: Path | str | None = None,
+    authlib_path: Path | str | None = None
     """authlib-injector.jar 路径"""
     yggdrasil_api: str | None = None
     """提供 Yggdrasil 登录的网站 URL"""
