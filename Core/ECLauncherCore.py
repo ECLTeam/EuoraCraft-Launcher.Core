@@ -312,19 +312,17 @@ class PlaceholderReplacer:
         index_id: str,
         natives_dir: Path | str,
         version_jar_path: Path | str,
-        cp_delimiter:str = ":",
-        version_isolation: bool = False
+        cp_delimiter: str = ":",
     ):
         """
         初始化
-        :param config: LaunchConfig 实例
+        :param config: LaunchConfig 实例, 版本隔离状态同样从这里读取
         :param classpath: 构建好的 Classpath 字符串
         :param main_class: Java 程序入口
         :param index_id: 资源引索 ID
         :param natives_dir: Natives 原生库路径
         :param version_jar_path: 游戏本体 Jar 文件路径
         :param cp_delimiter: Classpath 分隔符, 通常系统为 ":", Windows 为 ";"
-        :param version_isolation: 是否隔离版本, 不推荐不隔离
         """
         self.config = config
         self.classpath = classpath
@@ -333,13 +331,12 @@ class PlaceholderReplacer:
         self.natives_dir = natives_dir
         self.version_jar_path = version_jar_path
         self.cp_delimiter = cp_delimiter
-        self.version_isolation = version_isolation
 
     def _build_standard_replacements(self) -> dict[str, str]:
         """构建除 classpath 和 version_name 外的所有占位符映射"""
         game_dir = Path(self.config.game_path) / "versions"
         # 版本隔离=开 时使用独立的 versions/<版本名>/ 数据目录
-        if self.version_isolation:
+        if self.config.version_isolation:
             game_dir = game_dir / self.config.version_name
 
         user_type = self.config.user_type
