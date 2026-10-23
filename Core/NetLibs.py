@@ -385,7 +385,8 @@ class BaseApiClient:
             resp = self._client.head(url)
             if resp.status_code == 404:
                 url = f"{self.config.Forge}/net/minecraftforge/forge/{game_version_id}-{loader_version}-{game_version_id}/forge-{game_version_id}-{loader_version}-{game_version_id}-installer.jar"
-        except:
+        except Exception:
+            # 探测失败时保留主地址，由实际下载决定可用性。
             pass
 
         save_path = save_path / f"forge-{game_version_id}-{loader_version}-installer.jar"

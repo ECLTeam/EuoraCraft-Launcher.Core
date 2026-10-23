@@ -257,7 +257,9 @@ class YggdrasilAuthManager:
 
                 self.yggdrasil_tokens[account_id] = token_info
                 self.yggdrasil_accounts[token_id] = info
-            except:
+            except Exception:
+                # 单个账户的令牌刷新或缓存写入失败不影响其余账户；
+                # 该账户保留原有状态，下次使用时重新尝试。
                 pass
         self._save_account_list()
 
@@ -376,7 +378,8 @@ class YggdrasilAuthManager:
                     client_token=token_info["ClientToken"],
                     follow_ali=False
                 )
-            except:
+            except Exception:
+                # 注销远端令牌失败不影响本地清理，网络不可用时也应允许删除账户。
                 pass
 
             self.yggdrasil_accounts.pop(account_id, None)

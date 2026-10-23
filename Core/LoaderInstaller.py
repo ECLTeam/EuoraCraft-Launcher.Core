@@ -52,10 +52,20 @@ class LoaderInstaller:
             with zipfile.ZipFile(installer_path, "r") as zf:
                 install_profile = json.loads(zf.read("install_profile.json"))
                 version_data = json.loads(zf.read("version.json"))
-                bin_name = install_profile["data"]["BINPATCH"]["client"].replace("[", "").replace("]", "").replace("'", "").replace("/", "", 1)
+                bin_entry = install_profile["data"]["BINPATCH"]["client"]
+                bin_name = bin_entry.replace("[", "").replace("]", "").replace("'", "").replace("/", "", 1)
                 patch_bin = zf.read(bin_name)
-        except:
-            return self.install_forge(installer_path, save_name)
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise RuntimeError(f"安装器文件无法读取：{installer_path}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"安装器清单不是有效 JSON：{installer_path}") from exc
+        except KeyError as exc:
+            # 清单缺少 BINPATCH 说明这不是 NeoForge 安装器，交给 Forge 流程；
+            # 其余缺失（如压缩包内没有补丁文件）属于文件损坏，必须显式失败，
+            # 否则会被当成「需要走 Forge 流程」而装出错误的版本。
+            if exc.args and exc.args[0] in {"BINPATCH", "data"}:
+                return self.install_forge(installer_path, save_name)
+            raise RuntimeError(f"安装器缺少必要文件：{installer_path}（{exc}）") from exc
         if "processors" not in install_profile or not install_profile["processors"]:
             return self.install_forge(installer_path, save_name)
         java_path = Path(java_path)
