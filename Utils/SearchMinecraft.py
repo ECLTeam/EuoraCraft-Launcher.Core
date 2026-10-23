@@ -318,7 +318,9 @@ class SearchMinecraft:
                 info["RequestJava"] = self._find_minecraft_req_java(version_json, version_dir.name)
 
                 versions[version_dir.name] = info
-            except:
+            except Exception:
+                # 单个版本目录解析失败时跳过该版本，避免一个损坏的 JSON
+                # 让整个版本列表不可用。
                 pass
         # print(json.dumps(versions, ensure_ascii=False, indent=4))
         return versions

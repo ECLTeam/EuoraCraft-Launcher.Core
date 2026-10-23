@@ -769,7 +769,8 @@ class Downloader:
             adjuster_task.cancel()
             try:
                 await adjuster_task
-            except:
+            except asyncio.CancelledError:
+                # 主动取消调整任务，此处是预期结束方式。
                 pass
 
         # 确保暂停事件已设置，防止任务阻塞
@@ -782,7 +783,8 @@ class Downloader:
         speed_task.cancel()
         try:
             await asyncio.gather(collector_task, speed_task, return_exceptions=True)
-        except:
+        except asyncio.CancelledError:
+            # gather 已用 return_exceptions 收集子任务异常，此处只可能因本任务被取消。
             pass
 
         # 停止回调分发线程
