@@ -49,6 +49,7 @@ from .Data.nbt import (
 )
 from .Data.resource_files import ResourceFileMetadata, ResourceFilePolicy
 from .Data.world_seeds import WorldSeedSource, WorldSeedStore
+from .Utils.java_probe import JavaProbeError
 from .Utils.JavaScanner import JavaRuntime, JavaScanner
 from .Utils.SearchMinecraft import SearchMinecraft
 
@@ -116,6 +117,7 @@ __all__ = [
     "InstancesManager",
     "Int",
     "IntArray",
+    "JavaProbeError",
     "JavaRuntime",
     "JavaScanner",
     "LaunchConfig",

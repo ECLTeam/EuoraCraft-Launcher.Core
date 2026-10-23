@@ -1,11 +1,14 @@
 from dataclasses import dataclass
 from pathlib import Path
-import subprocess
 import hashlib
 import json
 import sys
 import os
 import re
+from collections.abc import Callable, Mapping
+from time import monotonic
+
+from .java_probe import JavaProbeError, probe_output
 
 # Windows 注册表支持（仅 Windows）
 try:
@@ -93,7 +96,11 @@ class JavaScanner:
 
     # ---------- 缓存 ----------
     @staticmethod
-    def probe(executable: Path | str) -> JavaRuntime | None:
+    def probe(
+        executable: Path | str, *, deadline: float | None = None,
+        max_output_bytes: int = 65536, environment: Mapping[str, str] | None = None,
+        check: Callable[[], None] | None = None,
+    ) -> JavaRuntime | None:
         """
         有界探测一个 Java 可执行文件，不扫描系统或修改扫描缓存。
 
@@ -106,7 +113,11 @@ class JavaScanner:
         probe_path = path.with_name("java.exe") if path.name.lower() == "javaw.exe" else path
         if not probe_path.is_file():
             return None
-        info = JavaScanner._extract_java_info(probe_path)
+        if type(max_output_bytes) is not int or not 0 < max_output_bytes <= 65536:
+            raise ValueError("Java 探测输出预算无效")
+        info = JavaScanner._extract_java_info(
+            probe_path, deadline=deadline, max_output_bytes=max_output_bytes, environment=environment, check=check
+        )
         if info is None:
             return None
         return JavaRuntime(path, info["version"], info.get("vendor"), info["architecture"], info["is_jdk"])
@@ -360,24 +371,24 @@ class JavaScanner:
         return platform.machine().lower()
 
     @staticmethod
-    def _extract_java_info(java_exe: Path) -> dict | None:
+    def _extract_java_info(
+        java_exe: Path, *, deadline: float | None = None, max_output_bytes: int = 65536,
+        environment: Mapping[str, str] | None = None, check: Callable[[], None] | None = None,
+    ) -> dict | None:
         """
         执行 java -XshowSettings:properties -version，解析输出
         返回字典：version, vendor, architecture, is_jdk
         """
         try:
-            proc = subprocess.run(
-                [str(java_exe), "-XshowSettings:properties", "-version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                encoding="utf-8",
-                errors="ignore",
-                **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform.startswith("win") else {})
-            )
-            if proc.returncode != 0:
-                return None
-            output = proc.stderr if proc.stderr else proc.stdout
+            output = probe_output(java_exe, deadline if deadline is not None else monotonic() + 10,
+                                  max_output_bytes, environment, check)
+        except JavaProbeError:
+            if deadline is not None:
+                raise
+            return None
+        except OSError:
+            return None
+        try:
             if not output:
                 return None
 
@@ -403,7 +414,7 @@ class JavaScanner:
                 if (java_exe.parent / compiler).is_file() or (home / "bin" / compiler).is_file():
                     info["is_jdk"] = True
             return info
-        except Exception:
+        except (OSError, ValueError):
             return None
 
 

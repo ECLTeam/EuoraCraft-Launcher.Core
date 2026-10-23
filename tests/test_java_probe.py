@@ -1,5 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -21,14 +20,14 @@ def test_modular_jre_is_not_a_jdk_and_probe_has_no_cache_side_effects(tmp_path, 
     output = f"java.version = 21.0.2\njava.vendor = Eclipse Adoptium\nos.arch = amd64\njava.home = {java_home}\n"
     calls = []
 
-    def run(args, **kwargs):
-        calls.append((args, kwargs))
-        return SimpleNamespace(returncode=0, stderr=output, stdout="")
+    def run(executable, deadline, max_output_bytes, environment, check):
+        calls.append((executable, max_output_bytes))
+        return output
 
-    monkeypatch.setattr(scanner_module.subprocess, "run", run)
+    monkeypatch.setattr(scanner_module, "probe_output", run)
     result = JavaScanner.probe(executable)
     assert result.version == "21.0.2" and result.is_jdk is is_jdk
-    assert calls[0][1]["timeout"] == 10
+    assert calls[0][1] == 65536
     assert not (java_home / "java_cache.json").exists()
 
 
@@ -38,7 +37,7 @@ def test_probe_rejects_failed_or_incomplete_output(tmp_path, monkeypatch, exit_c
 
     executable = tmp_path / ("java.exe" if scanner_module.sys.platform == "win32" else "java")
     executable.write_bytes(b"java")
-    monkeypatch.setattr(scanner_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=exit_code, stderr=output, stdout=""))
+    monkeypatch.setattr(scanner_module, "probe_output", lambda *args, **kwargs: output if exit_code == 0 else None)
     assert JavaScanner.probe(executable) is None
 
 
@@ -51,5 +50,5 @@ def test_java8_outer_jdk_uses_sibling_compiler_when_java_home_points_to_jre(tmp_
     executable = java_home / "bin" / f"java{suffix}"
     executable.write_bytes(b"java")
     executable.with_name(f"javac{suffix}").write_bytes(b"compiler")
-    monkeypatch.setattr(scanner_module.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stderr=f"java.version = 1.8.0_451\nos.arch = amd64\njava.home = {java_home / 'jre'}\n", stdout=""))
+    monkeypatch.setattr(scanner_module, "probe_output", lambda *args, **kwargs: f"java.version = 1.8.0_451\nos.arch = amd64\njava.home = {java_home / 'jre'}\n")
     assert JavaScanner.probe(executable).is_jdk
