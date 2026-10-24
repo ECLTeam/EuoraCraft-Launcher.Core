@@ -152,15 +152,13 @@ class GetGames:
         self,
         game_version_id: str,
         loader_version: str,
-        save_name: str | None = None,
-        fabric_api: tuple[str, str] | None = None
+        save_name: str | None = None
     ) -> list[tuple[str, str]]:
         """
-        下载指定 Minecraft 版本的指定 Fabric
+        构建指定 Minecraft 与 Fabric Loader 的下载清单，不包含实例模组。
         :param game_version_id: 版本 ID
         :param loader_version: Loader 版本，为空时解析最新版本
         :param save_name: 保存名称
-        :param fabric_api: 可选 Fabric API 下载信息 (URL, 文件名)
         :return: 下载列表 [("URL", "PATH")]
         """
         save_name = save_name or f"{game_version_id}-Fabric"
@@ -191,11 +189,7 @@ class GetGames:
             "LoaderVersion": loader_version
         })
 
-        download_list = self.files_checker.check_files(self.game_path, save_name)
-        if fabric_api:
-            url, filename = fabric_api
-            download_list.append((url, str(self.game_path / "mods" / filename)))
-        return download_list
+        return self.files_checker.check_files(self.game_path, save_name)
 
     def get_neoforged_versions(self, game_version_id: str) -> dict[str, list]:
         """
