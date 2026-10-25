@@ -1,3 +1,4 @@
+from .InstallProgress import InstallObserver
 from .LoaderInstaller import LoaderInstaller
 from .FilesChecker import FilesChecker
 from shutil import rmtree
@@ -86,7 +87,8 @@ class GetGames:
         self,
         version_id: str,
         save_name: str | None = None,
-        save_version_info: bool = True
+        save_version_info: bool = True,
+        *, observer: InstallObserver = InstallObserver(),
     ) -> list[tuple[str, str]] | tuple[str, dict]:
         """
         下载指定版本的 Minecraft
@@ -96,6 +98,7 @@ class GetGames:
         :return: 若 save_version_info 为 True 则返回下载列表, False 则只返回版本类型
         """
         save_name = save_name or version_id
+        observer.emit("resolve_metadata")
         # 1. 获取版本 JSON（客户端封装了重试）
         manifest = self.get_minecraft_versions()["Mapping"]
         if version_id not in manifest:
@@ -114,7 +117,7 @@ class GetGames:
                 "VanillaType": manifest["type"],
                 "VanillaVersion": version_id,
             })
-            return self.files_checker.check_files(self.game_path, save_name)
+            return self.files_checker.check_files(self.game_path, save_name, observer=observer)
         return manifest["type"], version_data
 
     def get_fabric_versions(self, game_version_id: str) -> dict[str, list[dict]] | None:
@@ -152,7 +155,8 @@ class GetGames:
         self,
         game_version_id: str,
         loader_version: str,
-        save_name: str | None = None
+        save_name: str | None = None,
+        *, observer: InstallObserver = InstallObserver(),
     ) -> list[tuple[str, str]]:
         """
         构建指定 Minecraft 与 Fabric Loader 的下载清单，不包含实例模组。
@@ -166,7 +170,8 @@ class GetGames:
         mc_type = self.build_minecraft_download_list(
             version_id=game_version_id,
             save_name=save_name,
-            save_version_info=False
+            save_version_info=False,
+            observer=observer,
         )[0]
         if not loader_version:
             fabric_versions = self.api_client.get_fabric_versions(game_version_id)
@@ -189,7 +194,7 @@ class GetGames:
             "LoaderVersion": loader_version
         })
 
-        return self.files_checker.check_files(self.game_path, save_name)
+        return self.files_checker.check_files(self.game_path, save_name, observer=observer)
 
     def get_neoforged_versions(self, game_version_id: str) -> dict[str, list]:
         """
@@ -205,7 +210,8 @@ class GetGames:
         game_version_id: str,
         loader_version: str,
         java_path: Path | str,
-        save_name: str | None = None
+        save_name: str | None = None,
+        *, observer: InstallObserver = InstallObserver(),
     ) -> list[tuple[str, str]]:
         """
         下载指定 Minecraft 版本的指定 NeoForged
@@ -220,15 +226,20 @@ class GetGames:
         mc_type, game_version_data = self.build_minecraft_download_list(
             version_id=game_version_id,
             save_name=save_name,
-            save_version_info=False
+            save_version_info=False,
+            observer=observer,
         )
         jar_path = self.game_path / "versions" / save_name / f"{game_version_id}.jar"
-        self.api_client.download_client_jar(game_version_data["downloads"]["client"]["sha1"], jar_path)
+        observer.emit("download_client")
+        self.api_client.download_client_jar(game_version_data["downloads"]["client"]["sha1"], jar_path, observer=observer)
+        observer.emit("download_client", status="completed")
 
         save_path = self.game_path / "versions" / save_name / "InstallCache"
         save_path.mkdir(parents=True, exist_ok=True)
-        installer_path = self.api_client.download_neoforged_installer(game_version_id, loader_version, save_path)
-        self.loader_installer.install_neoforged(installer_path, java_path, save_name)
+        observer.emit("download_loader")
+        installer_path = self.api_client.download_neoforged_installer(game_version_id, loader_version, save_path, observer=observer)
+        observer.emit("download_loader", status="completed")
+        self.loader_installer.install_neoforged(installer_path, java_path, save_name, observer=observer)
         rmtree(save_path)
 
         self._save_version_info(save_name, {
@@ -238,7 +249,7 @@ class GetGames:
             "LoaderVersion": loader_version
         })
 
-        return self.files_checker.check_files(self.game_path, save_name)
+        return self.files_checker.check_files(self.game_path, save_name, observer=observer)
 
     def get_forge_versions(self, game_version_id: str) -> list[dict[str, str]]:
         """
@@ -253,7 +264,8 @@ class GetGames:
         game_version_id: str,
         loader_version: str,
         java_path: Path | str,
-        save_name: str | None = None
+        save_name: str | None = None,
+        *, observer: InstallObserver = InstallObserver(),
     ) -> list[tuple[str, str]]:
         """
         下载指定 Minecraft 版本的指定 Forge
@@ -269,18 +281,23 @@ class GetGames:
         mc_type, game_version_data = self.build_minecraft_download_list(
             version_id=game_version_id,
             save_name=save_name,
-            save_version_info=False
+            save_version_info=False,
+            observer=observer,
         )
         jar_path = self.game_path / "versions" / save_name / f"{game_version_id}.jar"
-        self.api_client.download_client_jar(game_version_data["downloads"]["client"]["sha1"], jar_path)
+        observer.emit("download_client")
+        self.api_client.download_client_jar(game_version_data["downloads"]["client"]["sha1"], jar_path, observer=observer)
+        observer.emit("download_client", status="completed")
         #"""
         #mc_type = "Release"
 
         save_path = self.game_path / "versions" / save_name / "InstallCache"
         save_path.mkdir(parents=True, exist_ok=True)
-        installer_path = self.api_client.download_forge_installer(game_version_id, loader_version, save_path)
+        observer.emit("download_loader")
+        installer_path = self.api_client.download_forge_installer(game_version_id, loader_version, save_path, observer=observer)
+        observer.emit("download_loader", status="completed")
         #installer_path = r""
-        self.loader_installer.install_neoforged(installer_path, java_path, save_name)
+        self.loader_installer.install_neoforged(installer_path, java_path, save_name, observer=observer)
         rmtree(save_path)
 
         self._save_version_info(save_name, {
@@ -290,7 +307,7 @@ class GetGames:
             "LoaderVersion": loader_version
         })
 
-        return self.files_checker.check_files(self.game_path, save_name)
+        return self.files_checker.check_files(self.game_path, save_name, observer=observer)
 
     def get_quilt_versions(self, game_version_id: str) -> dict[str, list] | None:
         """
@@ -326,7 +343,8 @@ class GetGames:
         self,
         game_version_id: str,
         loader_version: str,
-        save_name: str | None = None
+        save_name: str | None = None,
+        *, observer: InstallObserver = InstallObserver(),
     ) -> list[tuple[str, str]]:
         """
         下载指定 Minecraft 版本的指定 Quilt
@@ -340,7 +358,8 @@ class GetGames:
         mc_type = self.build_minecraft_download_list(
             version_id=game_version_id,
             save_name=save_name,
-            save_version_info=False
+            save_version_info=False,
+            observer=observer,
         )[0]
         version_data = self.api_client.get_quilt_profile(
             game_version_id=game_version_id,
@@ -358,5 +377,5 @@ class GetGames:
             "LoaderVersion": loader_version
         })
 
-        return self.files_checker.check_files(self.game_path, save_name)
+        return self.files_checker.check_files(self.game_path, save_name, observer=observer)
 

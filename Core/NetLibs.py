@@ -1,3 +1,6 @@
+from .InstallProgress import InstallObserver
+from uuid import uuid4
+from time import monotonic
 from dataclasses import dataclass, fields, asdict
 from html.parser import HTMLParser
 from time import sleep as t_sleep
@@ -172,6 +175,50 @@ class BaseApiClient:
                 t_sleep(2 ** attempt)
         raise RuntimeError(f"下载失败: {url}")
 
+    def _download_file(self, url: str, target: Path, stage: str, observer: InstallObserver) -> None:
+        """流式写入独立临时文件，失败和取消均保留既有目标文件。"""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f"{target.name}.{uuid4().hex}.tmp")
+        transferred = 0
+        started = monotonic()
+        try:
+            for attempt in range(self.max_retries):
+                observer.check_cancelled()
+                received = 0
+                try:
+                    with self._client.stream("GET", url, headers=self.headers) as response:
+                        response.raise_for_status()
+                        length = response.headers.get("content-length")
+                        total = int(length) if length and length.isdecimal() and int(length) > 0 else None
+                        observer.emit(stage, unit="bytes" if total else "unknown", total=total, total_files=1)
+                        with temporary.open("wb") as output:
+                            for chunk in response.iter_bytes(64 * 1024):
+                                observer.check_cancelled()
+                                output.write(chunk)
+                                received += len(chunk)
+                                transferred += len(chunk)
+                                observer.emit(stage, unit="bytes" if total else "unknown", completed=received,
+                                              total=total, total_files=1, transferred_bytes=transferred,
+                                              speed=int(transferred / max(monotonic() - started, 0.001)))
+                        if total is not None and received != total:
+                            raise httpx.ReadError("文件下载长度与响应声明不一致", request=response.request)
+                    observer.check_cancelled()
+                    temporary.replace(target)
+                    observer.emit(stage, status="completed", unit="bytes" if total else "unknown",
+                                  completed=received, total=total, completed_files=1, total_files=1,
+                                  transferred_bytes=transferred)
+                    return
+                except (httpx.HTTPError, httpx.StreamError):
+                    if attempt == self.max_retries - 1:
+                        raise
+                    observer.emit(stage, action="retrying", total_files=1, transferred_bytes=transferred)
+                    deadline = monotonic() + 2 ** attempt
+                    while monotonic() < deadline:
+                        observer.check_cancelled()
+                        t_sleep(min(0.1, max(0, deadline - monotonic())))
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def get_minecraft_manifest(self) -> dict:
         """
         获取完整版本清单
@@ -210,9 +257,9 @@ class BaseApiClient:
         """
         return f"{self.config.Data}/v1/objects/{sha1}/client.jar"
 
-    def download_client_jar(self, sha1: str, save_path: Path | str) -> None:
+    def download_client_jar(self, sha1: str, save_path: Path | str, *, observer: InstallObserver = InstallObserver()) -> None:
         save_path = Path(save_path)
-        save_path.write_bytes(self._download_with_retry(self.get_client_jar_url(sha1)))
+        self._download_file(self.get_client_jar_url(sha1), save_path, "download_client", observer)
 
     def get_fabric_versions(self, game_version_id: str) -> list[dict]:
         """
@@ -316,7 +363,7 @@ class BaseApiClient:
             "Alpha": alpha_ver
         }
 
-    def download_neoforged_installer(self, game_version_id: str, loader_version: str, save_path: Path | str) -> Path:
+    def download_neoforged_installer(self, game_version_id: str, loader_version: str, save_path: Path | str, *, observer: InstallObserver = InstallObserver()) -> Path:
         """
         下载一个 NeoForged 版本的 Installer.jar
         :param game_version_id: 游戏版本 ID
@@ -333,7 +380,7 @@ class BaseApiClient:
             url = f"{self.config.NeoForged}/net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-installer.jar"
 
         save_path = save_path / f"neoforge-{loader_version}-installer.jar"
-        save_path.write_bytes(self._download_with_retry(url))
+        self._download_file(url, save_path, "download_loader", observer)
 
         return save_path
 
@@ -370,7 +417,7 @@ class BaseApiClient:
                 })
             return versions
 
-    def download_forge_installer(self, game_version_id: str, loader_version: str, save_path: Path | str) -> Path:
+    def download_forge_installer(self, game_version_id: str, loader_version: str, save_path: Path | str, *, observer: InstallObserver = InstallObserver()) -> Path:
         """
         下载一个 Forge 版本的 Installer.jar
         :param game_version_id: 游戏版本 ID
@@ -390,7 +437,7 @@ class BaseApiClient:
             pass
 
         save_path = save_path / f"forge-{game_version_id}-{loader_version}-installer.jar"
-        save_path.write_bytes(self._download_with_retry(url))
+        self._download_file(url, save_path, "download_loader", observer)
 
         return save_path
 

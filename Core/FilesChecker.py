@@ -1,3 +1,4 @@
+from .InstallProgress import InstallObserver
 from .NetLibs import BaseApiClient
 from pathlib import Path
 from . import Libs
@@ -48,9 +49,10 @@ class FilesChecker:
 
         return download_list
 
-    def check_libraries(self, game_path: Path, version_json: dict) -> list[tuple[str, str]]:
+    def check_libraries(self, game_path: Path, version_json: dict, *, observer: InstallObserver = InstallObserver()) -> list[tuple[str, str]]:
         download_list = []
         for libraries in version_json.get("libraries", []):
+            observer.check_cancelled()
             if "classifiers" in libraries.get("downloads", {}):  # 补全natives
                 for classifiers in libraries["downloads"]["classifiers"].values():
                     natives_path = game_path / "libraries" / classifiers["path"]
@@ -96,13 +98,14 @@ class FilesChecker:
         return download_list
 
 
-    def check_assets(self, game_path: Path, version_json: dict) -> list[tuple[str, str]]:
+    def check_assets(self, game_path: Path, version_json: dict, *, observer: InstallObserver = InstallObserver()) -> list[tuple[str, str]]:
         download_list = []
         asset_index = version_json.get("assetIndex", {})
 
         if not asset_index:
             return download_list
 
+        observer.emit("check_resources", action="asset_index")
         asset_id = asset_index["id"]
         file_sha1 = asset_index["sha1"]
         local_index_path = game_path / "assets" / "indexes" / f"{asset_id}.json"
@@ -118,7 +121,9 @@ class FilesChecker:
 
         base_assets = self.config.Assets
 
+        observer.emit("check_resources", action="checking")
         for assets in index_data["objects"].values():
+            observer.check_cancelled()
             asset_file_sha1 = assets["hash"]
             get_asset_path = f"{asset_file_sha1[:2]}/{asset_file_sha1}"
             asset_path = game_path / "assets" / "objects" / get_asset_path
@@ -127,7 +132,7 @@ class FilesChecker:
 
         return download_list
 
-    def check_files(self, game_path: str | Path, version_name: str) -> list[tuple[str, str]]:
+    def check_files(self, game_path: str | Path, version_name: str, *, observer: InstallObserver = InstallObserver()) -> list[tuple[str, str]]:
         """
         检查 game_path 路径的 version_name 版本的完整性
         :param game_path: .minecraft 路径
@@ -135,6 +140,7 @@ class FilesChecker:
         :return: 需要下载的列表 [("URL", "Path")]
         """
         game_path = Path(game_path)
+        observer.emit("check_resources", action="checking")
         download_list = []
 
         if not (game_path / "versions" / version_name / f"{version_name}.json").is_file():
@@ -142,8 +148,8 @@ class FilesChecker:
 
         version_json = json.loads((game_path / "versions" / version_name / f"{version_name}.json").read_text("utf-8"))
         download_list.extend(self.check_game_jar(game_path, version_name, version_json))
-        download_list.extend(self.check_libraries(game_path, version_json))
-        download_list.extend(self.check_assets(game_path, version_json))
+        download_list.extend(self.check_libraries(game_path, version_json, observer=observer))
+        download_list.extend(self.check_assets(game_path, version_json, observer=observer))
         game_json = Libs.find_version(version_json, game_path, version_name)
 
         if game_json:
@@ -153,8 +159,8 @@ class FilesChecker:
                 if json_path.is_file():
                     jar_name = json_path.stem
             download_list.extend(self.check_game_jar(game_path, game_json[1].name, game_json[0], jar_name=jar_name))
-            download_list.extend(self.check_libraries(game_path, game_json[0]))
-            download_list.extend(self.check_assets(game_path, game_json[0]))
+            download_list.extend(self.check_libraries(game_path, game_json[0], observer=observer))
+            download_list.extend(self.check_assets(game_path, game_json[0], observer=observer))
 
         return download_list
 

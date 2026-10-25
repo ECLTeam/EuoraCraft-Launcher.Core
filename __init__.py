@@ -14,6 +14,7 @@ from .Core.ECLauncherCore import LaunchConfig, build_minecraft_cmd
 from .Core.Errors import CoreError, GameDataError
 from .Core.FilesChecker import FilesChecker
 from .Core.GetGames import GetGames, VersionClassifier
+from .Core.InstallProgress import InstallEvent, InstallObserver
 from .Core.InstancesManager import InstancesManager
 from .Core.Libs import atomic_write_text, find_version, get_file_sha1, name_to_path, name_to_uuid, unzip
 from .Core.LoaderInstaller import LoaderInstaller
@@ -112,6 +113,8 @@ __all__ = [
     "Float",
     "GameDataError",
     "GetGames",
+    "InstallEvent",
+    "InstallObserver",
     "InstanceMetadata",
     "InstanceOptionsStore",
     "InstancesManager",
