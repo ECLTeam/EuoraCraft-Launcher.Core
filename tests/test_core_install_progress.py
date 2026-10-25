@@ -152,16 +152,97 @@ def test_processor_reports_items_checks_exit_and_adapts_log_callback(tmp_path, m
     checker = SimpleNamespace(config=None, check_libraries=Mock(return_value=[]))
     loader = LoaderInstaller(checker, SimpleNamespace(create_instance=execute), tmp_path, log_callback=output.append)
     if exit_code:
-        with pytest.raises(RuntimeError, match="退出码：1"):
+        with pytest.raises(RuntimeError, match="第 1/1 个处理器退出码 1"):
             loader.install_neoforged(installer, "java", "Test", observer=InstallObserver(events.append))
         assert not any(event.stage == "install_loader" and event.status == "completed" for event in events)
+        assert not (version_path / "Test.json").exists()
     else:
         loader.install_neoforged(installer, "java", "Test", observer=InstallObserver(events.append))
         assert any(event.unit == "items" and event.completed == 1 and event.total == 1 for event in events)
+        assert (version_path / "Test.json").is_file()
     assert output == ["processor output"]
     separator = ";" if platform_name == "Windows" else ":"
     helper_path = tmp_path / "libraries/test/helper/1/helper-1.jar"
-    assert f"{helper_path}{separator}{processor_path}" in commands[0]
+    classpath = commands[0][commands[0].index("-cp") + 1]
+    assert classpath == f"{helper_path}{separator}{processor_path}"
+
+
+def test_processor_resolves_installer_data_placeholders(tmp_path, monkeypatch):
+    """处理器参数里的 data 变量应解析成 libraries 路径，字面量保持原样。"""
+    monkeypatch.setattr("ECL.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
+    version_path = tmp_path / "versions" / "Test"
+    version_path.mkdir(parents=True)
+    processor_path = tmp_path / "libraries/test/processor/1/processor-1.jar"
+    processor_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(processor_path, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Main-Class: Test\n")
+    profile = {
+        "data": {
+            "BINPATCH": {"client": "/patch.bin"},
+            "PATCHED": {"client": "[test:patched:1]"},
+            "MAPPINGS": {"client": "[test:neoform:1:mappings@txt]"},
+            "LABEL": {"client": "'literal value'"},
+        },
+        "processors": [
+            {
+                "jar": "test:processor:1",
+                "classpath": ["test:processor:1"],
+                "args": ["--input", "{MAPPINGS}", "--output", "{PATCHED}", "--label", "{LABEL}", "{SIDE}"],
+            }
+        ],
+    }
+    installer = tmp_path / "installer.jar"
+    with zipfile.ZipFile(installer, "w") as archive:
+        archive.writestr("install_profile.json", json.dumps(profile))
+        archive.writestr("version.json", json.dumps({"inheritsFrom": "1.20.1"}))
+        archive.writestr("patch.bin", b"patch")
+    commands = []
+
+    def execute(**kwargs):
+        commands.append(kwargs["args"])
+        return "private-instance-id", SimpleNamespace(returncode=0)
+
+    checker = SimpleNamespace(config=None, check_libraries=Mock(return_value=[]))
+    loader = LoaderInstaller(checker, SimpleNamespace(create_instance=execute), tmp_path, log_callback=lambda _line: None)
+    loader.install_neoforged(installer, "java", "Test", observer=InstallObserver(lambda _event: None))
+
+    assert commands[0][-7:] == [
+        "--input",
+        str(tmp_path / "libraries/test/neoform/1/neoform-1-mappings.txt"),
+        "--output",
+        str(tmp_path / "libraries/test/patched/1/patched-1.jar"),
+        "--label",
+        "literal value",
+        "client",
+    ]
+
+
+def test_processor_rejects_unknown_placeholder(tmp_path, monkeypatch):
+    """参数里出现未声明的占位符时应直接失败，不把占位符交给 Java。"""
+    monkeypatch.setattr("ECL.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
+    version_path = tmp_path / "versions" / "Test"
+    version_path.mkdir(parents=True)
+    processor_path = tmp_path / "libraries/test/processor/1/processor-1.jar"
+    processor_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(processor_path, "w") as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Main-Class: Test\n")
+    profile = {
+        "data": {"BINPATCH": {"client": "/patch.bin"}, "PATCHED": {"client": "[test:patched:1]"}},
+        "processors": [{"jar": "test:processor:1", "classpath": ["test:processor:1"], "args": ["{UNKNOWN_TOKEN}"]}],
+    }
+    installer = tmp_path / "installer.jar"
+    with zipfile.ZipFile(installer, "w") as archive:
+        archive.writestr("install_profile.json", json.dumps(profile))
+        archive.writestr("version.json", json.dumps({"inheritsFrom": "1.20.1"}))
+        archive.writestr("patch.bin", b"patch")
+
+    def execute(**kwargs):
+        raise AssertionError("参数解析失败时不应启动处理器")
+
+    checker = SimpleNamespace(config=None, check_libraries=Mock(return_value=[]))
+    loader = LoaderInstaller(checker, SimpleNamespace(create_instance=execute), tmp_path, log_callback=lambda _line: None)
+    with pytest.raises(RuntimeError, match="未知占位符"):
+        loader.install_neoforged(installer, "java", "Test", observer=InstallObserver(lambda _event: None))
 
 
 @pytest.mark.parametrize("merge_fails", [False, True])

@@ -154,6 +154,8 @@ class InstancesManager:
 
         if block_thread:
             proc.wait()
+            # 等读取线程收尾，否则刚退出的进程输出还没回读就被丢弃，日志里会什么都看不到。
+            t_out.join(timeout=5)
 
         return instance_id, proc
 

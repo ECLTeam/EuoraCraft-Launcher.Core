@@ -1,3 +1,4 @@
+from collections import deque
 from .InstallProgress import InstallObserver
 from .InstancesManager import InstancesManager
 from .FilesChecker import FilesChecker
@@ -10,6 +11,9 @@ import zipfile
 import asyncio
 import json
 import re
+
+# 处理器参数里的 {占位符}，取值来自安装器 data 声明与 ECL 内置变量。
+_processor_token_pattern = re.compile(r"\{([A-Z0-9_]+)\}")
 
 
 class LoaderInstaller:
@@ -72,7 +76,6 @@ class LoaderInstaller:
             return self.install_forge(installer_path, save_name, observer=observer)
         java_path = Path(java_path)
         ver_path = self.game_path / "versions" / save_name
-        (ver_path / f"{save_name}.json").write_text(json.dumps(version_data, ensure_ascii=False, indent=4), encoding="utf-8")
         bin_path = installer_path.parent / "client.bin"
         bin_path.write_bytes(patch_bin)
 
@@ -96,60 +99,132 @@ class LoaderInstaller:
         patched_path.parent.mkdir(parents=True, exist_ok=True)
 
         processors = []
+        tokens = self._installer_tokens(
+            install_profile, version_data, installer_path, bin_path, patched_path, ver_path
+        )
         for processor in install_profile["processors"]:
             if "sides" in processor and "client" not in processor["sides"]:
                 continue
+            processors.append(self._processor_command(processor, tokens, java_path))
 
-            args = []
-            for arg in processor["args"]:
-                if "{ROOT}" in arg:
-                    arg = f'"{arg.replace("{ROOT}", str(self.game_path))}"'
-                elif "{LIBRARY_DIR}" in arg:
-                    arg = f'"{arg.replace("{LIBRARY_DIR}", str(self.game_path / "libraries"))}"'
-                args.append(arg.replace(" ", ""))
-            jvm_args = (
-                " ".join(args)
-                .replace("{MINECRAFT_JAR}", f'"{ver_path / version_data.get("inheritsFrom", "None")}.jar"')
-                .replace("{PATCHED}", f'"{patched_path}"')
-                .replace("{BINPATCH}", f'"{bin_path}"')
-                .replace("{MINECRAFT_VERSION}", f'"{version_data.get("inheritsFrom")}"')
-                .replace("{INSTALLER}", f'"{installer_path}"')
-                .replace("{SIDE}", "client")
-            )
+        for index, command in enumerate(processors, 1):
+            observer.emit("install_loader", unit="items", completed=index - 1, total=len(processors))
+            # 保留最后若干行输出，处理器失败时随异常一起抛出，便于定位是哪个步骤出错。
+            output_tail: deque[str] = deque(maxlen=20)
 
-            classpath = []
-            for cp_name in processor["classpath"]:
-                lib_path = self.game_path / "libraries" / f"{Libs.name_to_path(cp_name)}"
-                classpath.append(str(lib_path))
+            def report(line: str, _instance_id: str) -> None:
+                output_tail.append(line)
+                self.log_callback(line)
 
-            if processor["jar"] not in processor["classpath"]:
-                lib_path = self.game_path / "libraries" / f"{Libs.name_to_path(processor['jar'])}"
-                classpath.append(str(lib_path))
-            cp = self.cp_delimiter.join(classpath)
-
-            jar_path = self.game_path / "libraries" / f"{Libs.name_to_path(processor['jar'])}"
-            with zipfile.ZipFile(jar_path, "r") as zf:
-                manifest_mf = zf.read("META-INF/MANIFEST.MF").decode("utf-8")
-            match = re.search(r"^Main-Class:\s*(.+)$", manifest_mf, re.MULTILINE)
-            if match:
-                main_class = match.group(1).strip()
-                processors.append(f'"{java_path}" -cp "{cp}" "{main_class}" {jvm_args}')
-
-        for index, args in enumerate(processors):
-            observer.emit("install_loader", unit="items", completed=index, total=len(processors))
             _, process = self.instances_mgr.create_instance(
                 instance_name="NeoForged Installer",
                 instance_type="LoaderInstaller",
-                args=args,
+                args=command,
                 cwd=installer_path.parent,
-                log_callback=lambda line, _instance_id: self.log_callback(line),
+                log_callback=report,
                 block_thread=True
             )
             if process.returncode != 0:
-                raise RuntimeError(f"加载器安装处理失败，退出码：{process.returncode}")
-            observer.emit("install_loader", unit="items", completed=index + 1, total=len(processors))
+                detail = " | ".join(item.strip() for item in output_tail if item.strip())
+                raise RuntimeError(
+                    f"加载器安装处理失败：第 {index}/{len(processors)} 个处理器退出码 {process.returncode}"
+                    + (f"；最后输出：{detail}" if detail else "")
+                )
+            observer.emit("install_loader", unit="items", completed=index, total=len(processors))
+
+        # 处理器全部成功后才写版本描述：中途失败不会留下能被当成「已安装」的半成品。
+        ver_path.mkdir(parents=True, exist_ok=True)
+        (ver_path / f"{save_name}.json").write_text(json.dumps(version_data, ensure_ascii=False, indent=4), encoding="utf-8")
         observer.emit("install_loader", status="completed")
         return True
+
+    def _installer_tokens(
+        self,
+        install_profile: dict,
+        version_data: dict,
+        installer_path: Path,
+        bin_path: Path,
+        patched_path: Path,
+        ver_path: Path,
+    ) -> dict[str, str]:
+        """
+        汇总处理器参数可用的全部占位符。
+
+        先按安装器 data 声明解析（``[group:artifact:version[:classifier][@ext]]``
+        指向 libraries 内的构件，``'文本'`` 按字面量使用），再叠加 ECL 内置占位符。
+        BINPATCH 必须覆盖为已解压的补丁文件：处理器读不到安装器压缩包内的路径。
+        """
+        tokens: dict[str, str] = {}
+        for key, entry in (install_profile.get("data") or {}).items():
+            if isinstance(entry, dict):
+                raw = entry.get("client") or entry.get("server")
+            else:
+                raw = entry
+            if isinstance(raw, str):
+                tokens[str(key)] = self._resolve_installer_value(raw)
+        tokens.update({
+            "MINECRAFT_JAR": str(ver_path / f"{version_data.get('inheritsFrom', 'None')}.jar"),
+            "MINECRAFT_VERSION": str(version_data.get("inheritsFrom")),
+            "INSTALLER": str(installer_path),
+            "SIDE": "client",
+            "ROOT": str(self.game_path),
+            "LIBRARY_DIR": str(self.game_path / "libraries"),
+            "PATCHED": str(patched_path),
+            "BINPATCH": str(bin_path),
+        })
+        return tokens
+
+    def _resolve_installer_value(self, value: str) -> str:
+        """
+        把安装器 data 中的一个取值解析为处理器可直接使用的字符串。
+
+        ``[group:artifact:version[:classifier][@ext]]`` 是构件坐标，落到 libraries
+        下的绝对路径；``'文本'`` 是字面量；其余原样返回。坐标无法解析时保留原文，
+        交给处理器报错，避免静默指向一个不存在的目录。
+        """
+        text = str(value).strip()
+        if text.startswith("[") and text.endswith("]"):
+            relative = Libs.name_to_path(text[1:-1])
+            return str(self.game_path / "libraries" / relative) if relative else text
+        if len(text) >= 2 and text.startswith("'") and text.endswith("'"):
+            return text[1:-1]
+        return text
+
+    def _processor_command(self, processor: dict, tokens: dict[str, str], java_path: Path) -> list[str]:
+        """
+        生成单个处理器的完整命令行。
+
+        以参数列表形式交给子进程，避免路径含空格时被字符串拼接和手写引号破坏；
+        参数中的未知占位符直接报错，而不是原样传给 Java 得到难以定位的失败。
+        """
+        classpath = [
+            str(self.game_path / "libraries" / Libs.name_to_path(name))
+            for name in processor["classpath"]
+        ]
+        jar_path = self.game_path / "libraries" / Libs.name_to_path(processor["jar"])
+        if processor["jar"] not in processor["classpath"]:
+            classpath.append(str(jar_path))
+        with zipfile.ZipFile(jar_path, "r") as zf:
+            manifest_mf = zf.read("META-INF/MANIFEST.MF").decode("utf-8")
+        match = re.search(r"^Main-Class:\s*(.+)$", manifest_mf, re.MULTILINE)
+        if not match:
+            raise RuntimeError(f"安装器处理器缺少 Main-Class：{jar_path}")
+        main_class = match.group(1).strip()
+
+        expanded = []
+        for raw in processor["args"]:
+            value = _processor_token_pattern.sub(lambda m: self._token_value(m, tokens), str(raw))
+            # 参数里也会直接出现 [坐标] 与 '字面量'，与 data 取值同一套解析规则。
+            expanded.append(self._resolve_installer_value(value))
+        return [str(java_path), "-cp", self.cp_delimiter.join(classpath), main_class, *expanded]
+
+    @staticmethod
+    def _token_value(match: re.Match, tokens: dict[str, str]) -> str:
+        """取占位符对应的取值，缺失时立刻失败而不是把占位符传给 Java。"""
+        name = match.group(1)
+        if name not in tokens:
+            raise RuntimeError(f"安装器参数包含未知占位符：{{{name}}}")
+        return tokens[name]
 
     def install_forge(
         self,
