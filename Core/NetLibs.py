@@ -2,54 +2,19 @@ from .InstallProgress import InstallObserver
 from uuid import uuid4
 from time import monotonic
 from dataclasses import dataclass, fields, asdict
-from html.parser import HTMLParser
 from time import sleep as t_sleep
 from pathlib import Path
 import httpx
+import re
+
+# Forge 全量版本索引：按 Minecraft 版本分组，值形如 "{mc}-{loader}"。
+# 相比逐版本抓 index_{mc}.html，这里一次拿到全部版本且不依赖页面结构。
+_forge_version_index_url = "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json"
 
 
-class _ForgeVersionParser(HTMLParser):
-    """解析 Forge 版本列表 HTML，提取 download-version 单元格的直接文本。
-
-    原实现依赖 lxml 的 XPath，改用标准库以缩减打包体积。
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._in_table = False
-        self._in_td = False
-        self._td_depth = 0
-        self._td_text: list[str] = []
-        self.versions: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        classes = (dict(attrs).get("class") or "").split()
-        if tag == "table" and "download-list" in classes:
-            self._in_table = True
-        elif tag == "td" and self._in_table and "download-version" in classes:
-            self._in_td = True
-            self._td_depth = 1
-            self._td_text = []
-        elif self._in_td:
-            self._td_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "table":
-            self._in_table = False
-        elif tag == "td" and self._in_td:
-            text = "".join(self._td_text).strip()
-            if text:
-                self.versions.append(text)
-            self._in_td = False
-            self._td_depth = 0
-        elif self._in_td:
-            self._td_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        # 只收集 td 的直接文本，忽略子元素（图标、链接）内的文本
-        if self._in_td and self._td_depth == 1:
-            self._td_text.append(data)
-
+def _forge_version_sort_key(version: str) -> tuple[int, ...]:
+    """把 Forge 版本号拆成数字元组，按版本而不是字符串排序。"""
+    return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
 @dataclass
@@ -388,34 +353,51 @@ class BaseApiClient:
         """
         获取指定某个 Minecraft 版本可用的 Forge 版本列表
         :param game_version_id: 游戏版本 ID
-        :return: Forge 版本列表
+        :return: Forge 版本列表，最新版本在前
         """
-        game_version = game_version_id.replace("-", "_")
         if type(self.config) == BmclApiUrl:
-            ver_list = self._get_json_with_retry(
-                f"https://bmclapi2.bangbang93.com/forge/minecraft/{game_version}"
-            )
-            versions = []
-            for version in ver_list:
-                versions.append({
-                    "LoaderVersion": version["version"],
-                    "GameVersion": game_version_id
-                })
-            return versions
+            versions = self._forge_versions_from_bmcl(game_version_id)
         else:
-            versions = []
-            get_html = self._download_with_retry(
-                f"https://files.minecraftforge.net/net/minecraftforge/forge/index_{game_version}.html"
-            )
-            parser = _ForgeVersionParser()
-            # Python 3.13 的 HTMLParser.feed 只接受 str，需先解码 bytes
-            parser.feed(get_html.decode("utf-8", "replace"))
-            for version in parser.versions:
-                versions.append({
-                    "LoaderVersion": version,
-                    "GameVersion": game_version_id
-                })
-            return versions
+            versions = self._forge_versions_from_index(game_version_id)
+        # 两个来源都不保证返回顺序（BMCLAPI 的最新版本甚至不在末尾），
+        # 统一按版本号降序，界面保持「最新在前」。
+        versions.sort(key=lambda item: _forge_version_sort_key(item["LoaderVersion"]), reverse=True)
+        return versions
+
+    def _forge_versions_from_bmcl(self, game_version_id: str) -> list[dict[str, str]]:
+        # BMCLAPI 镜像列表；坐标本身不带 Minecraft 前缀，可直接用于安装器拼接。
+        game_version = game_version_id.replace("-", "_")
+        ver_list = self._get_json_with_retry(
+            f"https://bmclapi2.bangbang93.com/forge/minecraft/{game_version}"
+        )
+        return [
+            {"LoaderVersion": version["version"], "GameVersion": game_version_id}
+            for version in ver_list
+        ]
+
+    def _forge_versions_from_index(self, game_version_id: str) -> list[dict[str, str]]:
+        # 官方全量索引的值带 "{mc}-" 前缀（如 1.21.1-52.1.20），而安装器坐标由
+        # 调用方按 "{mc}-{loader}" 拼接，这里必须还原成纯加载器版本。
+        game_version = game_version_id.replace("-", "_")
+        payload = self._get_json_with_retry(_forge_version_index_url)
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Forge 版本索引格式异常：{_forge_version_index_url}")
+        key = next(
+            (
+                candidate
+                for candidate in (game_version_id, game_version)
+                if isinstance(payload.get(candidate), list)
+            ),
+            None,
+        )
+        if key is None:
+            return []
+        prefix = f"{key}-"
+        return [
+            {"LoaderVersion": str(item).strip().removeprefix(prefix), "GameVersion": game_version_id}
+            for item in payload[key]
+            if isinstance(item, str) and str(item).strip()
+        ]
 
     def download_forge_installer(self, game_version_id: str, loader_version: str, save_path: Path | str, *, observer: InstallObserver = InstallObserver()) -> Path:
         """
