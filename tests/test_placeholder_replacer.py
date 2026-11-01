@@ -7,11 +7,15 @@ from ECL.game import LaunchConfig
 from ECL.game.Core.ECLauncherCore import PlaceholderReplacer
 
 
-def _build_replacer(game_path: Path, version_isolation: bool) -> PlaceholderReplacer:
+def _build_replacer(
+    game_path: Path,
+    version_isolation: bool,
+    version_name: str = "1.21.8-Fabric",
+) -> PlaceholderReplacer:
     config = LaunchConfig(
         java_path="java",
         game_path=game_path,
-        version_name="1.21.8-Fabric",
+        version_name=version_name,
         use_ram=4096,
         player_name="Steve",
         auth_uuid="5627dd98e6be3c21b8a8e92344183641",
@@ -45,3 +49,17 @@ def test_isolated_game_directory_keeps_version_name(tmp_path: Path) -> None:
     replacements = replacer._build_standard_replacements()
 
     assert replacements["game_directory"] == str(tmp_path / "versions" / "1.21.8-Fabric")
+
+
+def test_version_name_is_quoted_in_every_placeholder_position(tmp_path: Path) -> None:
+    """版本名出现在忽略列表和游戏参数时都必须作为完整值引用。"""
+    version_name = "Zombie Invade 100 Days"
+    replacer = _build_replacer(tmp_path, version_isolation=False, version_name=version_name)
+
+    command = replacer.replace("-DignoreList=forge-,${version_name}.jar --version ${version_name} -cp ${classpath}")
+
+    assert command == (
+        f'-DignoreList=forge-,"{version_name}".jar '
+        f'--version "{version_name}" '
+        f'-cp "client.jar" "net.minecraft.client.main.Main"'
+    )

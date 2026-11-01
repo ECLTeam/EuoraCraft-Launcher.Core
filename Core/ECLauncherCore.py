@@ -2,6 +2,8 @@ from dataclasses import dataclass, asdict, fields
 from shutil import rmtree
 from pathlib import Path
 from . import Libs
+from .Errors import CoreError
+from .LaunchCommand import validate_launch_command
 import platform
 import json
 import re
@@ -333,7 +335,7 @@ class PlaceholderReplacer:
         self.cp_delimiter = cp_delimiter
 
     def _build_standard_replacements(self) -> dict[str, str]:
-        """构建除 classpath 和 version_name 外的所有占位符映射"""
+        """构建除 classpath 外的所有占位符映射"""
         game_dir = Path(self.config.game_path) / "versions"
         # 版本隔离=开 时使用独立的 versions/<版本名>/ 数据目录
         if self.config.version_isolation:
@@ -359,17 +361,10 @@ class PlaceholderReplacer:
             "user_properties": "{}",
             "classpath_separator": self.cp_delimiter,
             "primary_jar_name": str(Path(self.version_jar_path).name),
+            "version_name": self.config.version_name,
             "resolution_width": str(self.config.window_width),
             "resolution_height": str(self.config.window_height),
         }
-
-    @staticmethod
-    def _replace_last(text: str, old: str, new: str) -> str:
-        """
-        只替换字符串中最后一次出现的 old
-        等价于原 C_Libs.replace_last 的逻辑
-        """
-        return new.join(text.rsplit(old, 1))
 
     def replace(self, raw_command: str) -> str:
         """
@@ -382,15 +377,7 @@ class PlaceholderReplacer:
         for key, value in self._build_standard_replacements().items():
             result = result.replace(f"${{{key}}}", f'"{value}"')
 
-        version = self.config.version_name
-        result = (
-            self._replace_last(result, "${version_name}", f'"{version}"')
-                .replace("${version_name}", version)
-                .replace("${classpath}", f'"{self.classpath}" "{self.main_class}"')
-        )
-        result = result
-
-        return result
+        return result.replace("${classpath}", f'"{self.classpath}" "{self.main_class}"')
 
 
 def build_minecraft_cmd(config: LaunchConfig) -> str:
@@ -446,6 +433,10 @@ def build_minecraft_cmd(config: LaunchConfig) -> str:
             else:
                 version_jar = game_json[1] / f"{game_json[1].name}.jar"
 
+    main_class = version_json.get("mainClass")
+    if not isinstance(main_class, str) or not main_class.strip():
+        raise CoreError("实例版本描述缺少有效的启动主类，无法构建启动命令", "LAUNCH_COMMAND_INVALID")
+
     jvm_builder.add_game_args(version_json)
     cp_builder.add_libraries(version_json)
 
@@ -470,11 +461,13 @@ def build_minecraft_cmd(config: LaunchConfig) -> str:
     cmd = PlaceholderReplacer(
         config=config,
         classpath=cp_builder.build(cp_delimiter),
-        main_class=version_json["mainClass"],
+        main_class=main_class,
         index_id=index_id,
         natives_dir=natives_path,
         version_jar_path=version_jar,
         cp_delimiter=cp_delimiter
     )
 
-    return cmd.replace(jvm_builder.build())
+    command = cmd.replace(jvm_builder.build())
+    validate_launch_command(command, version_name=config.version_name, main_class=main_class)
+    return command
