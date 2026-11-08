@@ -40,6 +40,7 @@ class JvmArgumentBuilder:
 
         self.system = platform.system()
         self.args = []
+        self.option_value_pairs: set[tuple[str, str]] = set()
 
         self._add_base_args()
 
@@ -76,12 +77,7 @@ class JvmArgumentBuilder:
         """
         if "arguments" in version_json:
             if "jvm" in version_json["arguments"]:
-                for arguments_jvm in version_json["arguments"]["jvm"]:
-                    if type(arguments_jvm) is not str:
-                        continue
-                    if arguments_jvm in self.args:
-                        continue
-                    self.args.append(arguments_jvm.replace(" ", ""))
+                self._add_argument_entries(version_json["arguments"]["jvm"])
         elif "minecraftArguments" in version_json:
             ex_args = [
                 "-Djava.library.path=${natives_directory}",
@@ -105,13 +101,46 @@ class JvmArgumentBuilder:
         """
         if "arguments" in version_json:
             if "game" in version_json["arguments"]:
-                for arguments_game in version_json["arguments"]["game"]:
-                    if type(arguments_game) is not str:
-                        continue
-                    if arguments_game in self.args:
-                        continue
-                    self.args.append(arguments_game.replace(" ", ""))
+                self._add_argument_entries(version_json["arguments"]["game"])
         return self
+
+    def _add_argument_entries(self, entries: list) -> None:
+        """
+        按 arguments 描述的原始顺序追加参数条目，选项与值成对去重。
+
+        --add-opens、--add-exports 等标志会伴随不同值在同一个版本描述中重复
+        出现，按裸 token 去重会丢弃后续标志，使其值脱离选项而被 JVM 当作主
+        类；因此带值选项按 (标志, 值) 对去重，独立 token 按原值去重。继承合并
+        时父版本与子版本声明的相同参数（如导入实例复制出的 -cp 与 classpath）
+        得以收敛为一份。
+
+        :param entries: arguments.jvm 或 arguments.game 的条目列表
+        """
+        pending_flag: str | None = None
+        for entry in entries:
+            if not isinstance(entry, str):
+                continue
+            token = entry.replace(" ", "")
+            is_flag = token.startswith("-") and "=" not in token
+            if pending_flag is not None and not is_flag:
+                pair = (pending_flag, token)
+                if pair not in self.option_value_pairs:
+                    self.option_value_pairs.add(pair)
+                    self.args.append(pending_flag)
+                    self.args.append(token)
+                pending_flag = None
+                continue
+            if pending_flag is not None:
+                # 无值选项后紧跟另一个选项：前者按独立 token 收敛
+                if pending_flag not in self.args:
+                    self.args.append(pending_flag)
+                pending_flag = None
+            if is_flag:
+                pending_flag = token
+            elif token not in self.args:
+                self.args.append(token)
+        if pending_flag is not None and pending_flag not in self.args:
+            self.args.append(pending_flag)
 
     def add_custom(self, custom_args: list[str]) -> "JvmArgumentBuilder":
         """
