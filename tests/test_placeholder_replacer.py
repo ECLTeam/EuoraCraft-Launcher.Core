@@ -5,12 +5,14 @@ from pathlib import Path
 import pytest
 from ECL.game import LaunchConfig
 from ECL.game.Core.ECLauncherCore import PlaceholderReplacer
+from ECL.game.Core.LaunchCommand import parse_launch_command
 
 
 def _build_replacer(
     game_path: Path,
     version_isolation: bool,
     version_name: str = "1.21.8-Fabric",
+    cp_delimiter: str = ";",
 ) -> PlaceholderReplacer:
     config = LaunchConfig(
         java_path="java",
@@ -28,6 +30,7 @@ def _build_replacer(
         index_id="1.21",
         natives_dir=game_path / "natives",
         version_jar_path=game_path / "client.jar",
+        cp_delimiter=cp_delimiter,
     )
 
 
@@ -63,3 +66,43 @@ def test_version_name_is_quoted_in_every_placeholder_position(tmp_path: Path) ->
         f'--version "{version_name}" '
         f'-cp "client.jar" "net.minecraft.client.main.Main"'
     )
+
+
+def test_classpath_separator_is_bare_between_quoted_segments(tmp_path: Path) -> None:
+    """分隔符裸替换后，Forge 模块路径在解析后仍是单个参数，主类保持独立 token。"""
+    replacer = _build_replacer(tmp_path, version_isolation=False)
+    libraries = str(tmp_path / "libraries")
+
+    command = replacer.replace(
+        "-p ${library_directory}/a.jar${classpath_separator}${library_directory}/b.jar -cp ${classpath}"
+    )
+
+    argv = parse_launch_command(command)
+    assert argv == [
+        "-p",
+        f"{libraries}/a.jar;{libraries}/b.jar",
+        "-cp",
+        "client.jar",
+        "net.minecraft.client.main.Main",
+    ]
+
+
+def test_numeric_and_index_placeholders_are_bare(tmp_path: Path) -> None:
+    """索引名与分辨率是结构值，替换结果不携带引号。"""
+    replacer = _build_replacer(tmp_path, version_isolation=False)
+
+    command = replacer.replace(
+        "--assetIndex ${assets_index_name} --width ${resolution_width} --height ${resolution_height}"
+    )
+
+    assert command == "--assetIndex 1.21 --width 854 --height 480"
+
+
+def test_paths_and_names_stay_quoted(tmp_path: Path) -> None:
+    """可含空格的目录、玩家名与实例名必须保持引用，守护既有行为。"""
+    version_name = "Zombie Invade 100 Days"
+    replacer = _build_replacer(tmp_path, version_isolation=False, version_name=version_name)
+
+    command = replacer.replace("--gameDir ${game_directory} --username ${auth_player_name} --version ${version_name}")
+
+    assert command == (f'--gameDir "{tmp_path / "versions"}" --username "Steve" --version "{version_name}"')

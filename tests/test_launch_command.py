@@ -76,3 +76,41 @@ def test_validate_launch_command_rejects_empty_version_name() -> None:
 
     assert exc_info.value.error_code == "LAUNCH_COMMAND_INVALID"
     assert "实例名称" in str(exc_info.value)
+
+
+def test_validate_accepts_realistic_forge_module_path() -> None:
+    """真实 Forge 命令形态（模块路径夹在引号段之间）必须通过校验。"""
+    libs = "D:/game/libraries"
+    versions = "D:/game/versions/Zombie Invade 100 Days"
+    command = (
+        '"java.exe" -Xms256M -Xmx4096M '
+        f'-DignoreList=bootstraplauncher,forge-,"{_VERSION_NAME}.jar" '
+        f'-Djava.library.path="{versions}/natives" '
+        f'-p "{libs}/cpw/a.jar;{libs}/cpw/b.jar" '
+        f'-cp "{libs}/client-extra.jar;{versions}/1.20.1.jar" {_MAIN_CLASS} '
+        f'--username Steve --version "{_VERSION_NAME}" '
+        f'--gameDir "{versions}"'
+    )
+
+    validate_launch_command(command, version_name=_VERSION_NAME, main_class=_MAIN_CLASS)
+
+    argv = parse_launch_command(command)
+    assert argv.count(_MAIN_CLASS) == 1
+    module_path_tokens = [token for token in argv if token.endswith("b.jar")]
+    assert len(module_path_tokens) == 1
+    assert f"{libs}/cpw/a.jar;{libs}/cpw/b.jar" == module_path_tokens[0]
+
+
+def test_validate_rejects_quoted_classpath_separator_corruption() -> None:
+    """分隔符被加引号时 `";""` 序列破坏引号状态，主类被合并进巨型 token，必须被校验拦截。"""
+    libs = "D:/game/libraries"
+    # 旧行为：classpath_separator 替换为 `";"`，与相邻的引号段构成 `";""`
+    command = (
+        f'"{libs}/a.jar";""{libs}"/b.jar";""{libs}"/c.jar -cp "client.jar" {_MAIN_CLASS} --version "{_VERSION_NAME}"'
+    )
+
+    with pytest.raises(CoreError) as exc_info:
+        validate_launch_command(command, version_name=_VERSION_NAME, main_class=_MAIN_CLASS)
+
+    assert exc_info.value.error_code == "LAUNCH_COMMAND_INVALID"
+    assert "主类" in str(exc_info.value)

@@ -306,6 +306,18 @@ class LaunchConfig:
 
 class PlaceholderReplacer:
     """占位符替换器"""
+
+    # 契约上不含空格的结构值，裸替换而不加引号。classpath_separator 恒位于模块
+    # 路径、类路径等更大 token 的内部且紧跟下一个引号段，若替换成 `";"` 会与相邻
+    # 引号构成 `";""` 序列；Windows 命令行解析把引号内的 `""` 视为转义的字面引号
+    # 而非"关闭再打开"，引号状态从此错乱，其后所有参数边界失效。
+    bare_keys: frozenset[str] = frozenset({
+        "classpath_separator",
+        "assets_index_name",
+        "resolution_width",
+        "resolution_height",
+    })
+
     def __init__(
         self,
         config: LaunchConfig,
@@ -369,13 +381,21 @@ class PlaceholderReplacer:
     def replace(self, raw_command: str) -> str:
         """
         替换掉占位符
+
+        可能含空格的路径、名称与凭据统一加引号，保证含空格的实例名或目录
+        在命令行解析后仍是单个参数；结构值（分隔符、索引名、分辨率）裸替换，
+        避免在相邻引号段之间引入 `""` 转义序列。
+
         :param raw_command: 初始指令(未替换占位符)
         :return: 替换好的指令
         """
         result = raw_command
 
         for key, value in self._build_standard_replacements().items():
-            result = result.replace(f"${{{key}}}", f'"{value}"')
+            if key in self.bare_keys:
+                result = result.replace(f"${{{key}}}", value)
+            else:
+                result = result.replace(f"${{{key}}}", f'"{value}"')
 
         return result.replace("${classpath}", f'"{self.classpath}" "{self.main_class}"')
 
