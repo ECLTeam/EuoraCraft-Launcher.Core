@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 from ECL.minecraft.game.Core.Errors import CoreError
 from ECL.minecraft.game.Core.LaunchCommand import parse_launch_command, validate_launch_command
@@ -102,7 +104,7 @@ def test_validate_accepts_realistic_forge_module_path() -> None:
 
 
 def test_validate_rejects_quoted_classpath_separator_corruption() -> None:
-    """分隔符被加引号时 `";""` 序列破坏引号状态，主类被合并进巨型 token，必须被校验拦截。"""
+    """分隔符被加引号时 `";""` 序列破坏引号状态，必须以 LAUNCH_COMMAND_INVALID 拦截。"""
     libs = "D:/game/libraries"
     # 旧行为：classpath_separator 替换为 `";"`，与相邻的引号段构成 `";""`
     command = (
@@ -113,4 +115,9 @@ def test_validate_rejects_quoted_classpath_separator_corruption() -> None:
         validate_launch_command(command, version_name=_VERSION_NAME, main_class=_MAIN_CLASS)
 
     assert exc_info.value.error_code == "LAUNCH_COMMAND_INVALID"
-    assert "主类" in str(exc_info.value)
+    # Windows 解析产生合并 token，由主类唯一性校验拦截；POSIX 解析在引号
+    # 不配对处直接失败，拦截发生在主类校验之前，消息不同但错误码一致。
+    if sys.platform == "win32":
+        assert "主类" in str(exc_info.value)
+    else:
+        assert "引号" in str(exc_info.value)
