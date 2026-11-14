@@ -10,10 +10,10 @@ from unittest.mock import Mock
 import anyio
 import httpx
 import pytest
-from ECL.game import LoaderInstaller
-from ECL.game.Core.Downloader import Downloader
-from ECL.game.Core.InstallProgress import InstallObserver
-from ECL.game.Core.NetLibs import ApiUrlConfig, BaseApiClient
+from ECL.minecraft.game import LoaderInstaller
+from ECL.minecraft.game.Core.Downloader import Downloader
+from ECL.minecraft.game.Core.InstallProgress import InstallObserver
+from ECL.minecraft.game.Core.NetLibs import ApiUrlConfig, BaseApiClient
 
 
 def test_direct_client_reports_transfer_and_preserves_target_on_failure(tmp_path: Path):
@@ -54,7 +54,7 @@ async def test_unknown_size_reports_transferred_bytes_and_final_callback(monkeyp
         return httpx.Response(200, stream=Stream())
 
     monkeypatch.delenv("ECL_DOWNLOAD_PROXY", raising=False)
-    monkeypatch.setattr("ECL.game.Core.Downloader.httpx.AsyncClient",
+    monkeypatch.setattr("ECL.minecraft.game.Core.Downloader.httpx.AsyncClient",
                         lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     downloader = Downloader([("http://example.test/file", tmp_path / "file")], max_rounds=1,
                             observer=InstallObserver(events.append),
@@ -82,7 +82,7 @@ async def test_preflight_is_bounded_and_reports_checks(monkeypatch, tmp_path: Pa
         return httpx.Response(200, content=b"file")
 
     monkeypatch.delenv("ECL_DOWNLOAD_PROXY", raising=False)
-    monkeypatch.setattr("ECL.game.Core.Downloader.httpx.AsyncClient",
+    monkeypatch.setattr("ECL.minecraft.game.Core.Downloader.httpx.AsyncClient",
                         lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     downloader = Downloader([(f"http://example.test/{i}", tmp_path / str(i)) for i in range(12)],
                             observer=InstallObserver(events.append))
@@ -112,7 +112,7 @@ async def test_transport_disconnect_retries_without_inflating_completed_bytes(mo
         return httpx.Response(200, content=b"x" * 131072)
 
     monkeypatch.delenv("ECL_DOWNLOAD_PROXY", raising=False)
-    monkeypatch.setattr("ECL.game.Core.Downloader.httpx.AsyncClient",
+    monkeypatch.setattr("ECL.minecraft.game.Core.Downloader.httpx.AsyncClient",
                         lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     downloader = Downloader([("http://example.test/file", tmp_path / "file")],
                             observer=InstallObserver(events.append), max_rounds=2)
@@ -128,7 +128,7 @@ async def test_transport_disconnect_retries_without_inflating_completed_bytes(mo
 @pytest.mark.parametrize("platform_name", ["Windows", "Linux"])
 @pytest.mark.parametrize("exit_code", [0, 1])
 def test_processor_reports_items_checks_exit_and_adapts_log_callback(tmp_path, monkeypatch, platform_name, exit_code):
-    monkeypatch.setattr("ECL.game.Core.LoaderInstaller.platform.system", lambda: platform_name)
+    monkeypatch.setattr("ECL.minecraft.game.Core.LoaderInstaller.platform.system", lambda: platform_name)
     version_path = tmp_path / "versions" / "Test"
     version_path.mkdir(parents=True)
     processor_path = tmp_path / "libraries/test/processor/1/processor-1.jar"
@@ -169,7 +169,7 @@ def test_processor_reports_items_checks_exit_and_adapts_log_callback(tmp_path, m
 
 def test_processor_resolves_installer_data_placeholders(tmp_path, monkeypatch):
     """处理器参数里的 data 变量应解析成 libraries 路径，字面量保持原样。"""
-    monkeypatch.setattr("ECL.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
+    monkeypatch.setattr("ECL.minecraft.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
     version_path = tmp_path / "versions" / "Test"
     version_path.mkdir(parents=True)
     processor_path = tmp_path / "libraries/test/processor/1/processor-1.jar"
@@ -219,7 +219,7 @@ def test_processor_resolves_installer_data_placeholders(tmp_path, monkeypatch):
 
 def test_processor_rejects_unknown_placeholder(tmp_path, monkeypatch):
     """参数里出现未声明的占位符时应直接失败，不把占位符交给 Java。"""
-    monkeypatch.setattr("ECL.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
+    monkeypatch.setattr("ECL.minecraft.game.Core.LoaderInstaller.platform.system", lambda: "Windows")
     version_path = tmp_path / "versions" / "Test"
     version_path.mkdir(parents=True)
     processor_path = tmp_path / "libraries/test/processor/1/processor-1.jar"
@@ -262,7 +262,7 @@ async def test_chunks_retry_only_failed_part_and_clean_up_after_merge(monkeypatc
         return httpx.Response(206, content=payload[start:end + 1])
 
     monkeypatch.delenv("ECL_DOWNLOAD_PROXY", raising=False)
-    monkeypatch.setattr("ECL.game.Core.Downloader.httpx.AsyncClient",
+    monkeypatch.setattr("ECL.minecraft.game.Core.Downloader.httpx.AsyncClient",
                         lambda **kw: original_client(transport=httpx.MockTransport(handler), **kw))
     target = tmp_path / "file"
     target.write_bytes(b"existing")

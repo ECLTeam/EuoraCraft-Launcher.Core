@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ECL.game import LaunchConfig
+from ECL.minecraft.game import LaunchConfig
 
 
 def _build_config(**overrides: object) -> LaunchConfig:

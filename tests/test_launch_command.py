@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from ECL.game.Core.Errors import CoreError
-from ECL.game.Core.LaunchCommand import parse_launch_command, validate_launch_command
+from ECL.minecraft.game.Core.Errors import CoreError
+from ECL.minecraft.game.Core.LaunchCommand import parse_launch_command, validate_launch_command
 
 _MAIN_CLASS = "cpw.mods.bootstraplauncher.BootstrapLauncher"
 _VERSION_NAME = "Zombie Invade 100 Days"

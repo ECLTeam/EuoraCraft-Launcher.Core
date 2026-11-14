@@ -5,9 +5,9 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from ECL.game.Core.Downloader import Downloader
-from ECL.game.Core.FilesChecker import FilesChecker
-from ECL.game.Core.NetLibs import ApiUrlConfig
+from ECL.minecraft.game.Core.Downloader import Downloader
+from ECL.minecraft.game.Core.FilesChecker import FilesChecker
+from ECL.minecraft.game.Core.NetLibs import ApiUrlConfig
 
 
 def test_asset_index_request_failure_is_not_silently_ignored(tmp_path):

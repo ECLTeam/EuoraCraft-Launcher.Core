@@ -4,12 +4,12 @@ from pathlib import Path
 from time import monotonic
 
 import pytest
-from ECL.game import JavaProbeError
-from ECL.game.Utils.java_probe import probe_output
+from ECL.minecraft.game import JavaProbeError
+from ECL.minecraft.game.Utils.java_probe import probe_output
 
 
 def run_script(monkeypatch, script):
-    from ECL.game.Utils import java_probe
+    from ECL.minecraft.game.Utils import java_probe
 
     original = subprocess.Popen
     processes = []
@@ -66,7 +66,7 @@ def test_already_expired_probe_never_starts(monkeypatch):
 
 
 def test_public_probe_preserves_revocation_from_check_and_reaps_process(tmp_path, monkeypatch):
-    from ECL.game import JavaScanner
+    from ECL.minecraft.game import JavaScanner
 
     executable = tmp_path / ("java.exe" if sys.platform == "win32" else "java")
     executable.write_bytes(b"fixture")
@@ -85,7 +85,7 @@ def test_public_probe_preserves_revocation_from_check_and_reaps_process(tmp_path
 def test_probe_process_platform_flags_and_successful_cleanup(monkeypatch, platform):
     from types import SimpleNamespace
 
-    from ECL.game.Utils import java_probe
+    from ECL.minecraft.game.Utils import java_probe
 
     monkeypatch.setattr(java_probe, "sys", SimpleNamespace(platform=platform))
     if not hasattr(subprocess, "CREATE_NO_WINDOW"):

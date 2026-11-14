@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ECL.game.Core.ECLauncherCore import JvmArgumentBuilder
+from ECL.minecraft.game.Core.ECLauncherCore import JvmArgumentBuilder
 
 
 def _build_builder() -> JvmArgumentBuilder:

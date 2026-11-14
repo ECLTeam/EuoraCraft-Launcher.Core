@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from ECL.game import LaunchConfig
-from ECL.game.Core.ECLauncherCore import PlaceholderReplacer
-from ECL.game.Core.LaunchCommand import parse_launch_command
+from ECL.minecraft.game import LaunchConfig
+from ECL.minecraft.game.Core.ECLauncherCore import PlaceholderReplacer
+from ECL.minecraft.game.Core.LaunchCommand import parse_launch_command
 
 
 def _build_replacer(

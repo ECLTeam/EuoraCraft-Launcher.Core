@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from ECL.game import JavaScanner
+from ECL.minecraft.game import JavaScanner
 
 
 @pytest.mark.parametrize("is_jdk", [False, True])
 def test_modular_jre_is_not_a_jdk_and_probe_has_no_cache_side_effects(tmp_path, monkeypatch, is_jdk):
-    from ECL.game.Utils import JavaScanner as scanner_module
+    from ECL.minecraft.game.Utils import JavaScanner as scanner_module
 
     java_home = tmp_path / "runtime"
     (java_home / "bin").mkdir(parents=True)
@@ -33,7 +33,7 @@ def test_modular_jre_is_not_a_jdk_and_probe_has_no_cache_side_effects(tmp_path, 
 
 @pytest.mark.parametrize(("exit_code", "output"), [(1, "java.version = 21\nos.arch = amd64"), (0, "java.version = unknown\nos.arch = amd64"), (0, "java.version = 21")])
 def test_probe_rejects_failed_or_incomplete_output(tmp_path, monkeypatch, exit_code, output):
-    from ECL.game.Utils import JavaScanner as scanner_module
+    from ECL.minecraft.game.Utils import JavaScanner as scanner_module
 
     executable = tmp_path / ("java.exe" if scanner_module.sys.platform == "win32" else "java")
     executable.write_bytes(b"java")
@@ -42,7 +42,7 @@ def test_probe_rejects_failed_or_incomplete_output(tmp_path, monkeypatch, exit_c
 
 
 def test_java8_outer_jdk_uses_sibling_compiler_when_java_home_points_to_jre(tmp_path, monkeypatch):
-    from ECL.game.Utils import JavaScanner as scanner_module
+    from ECL.minecraft.game.Utils import JavaScanner as scanner_module
 
     java_home = tmp_path / "jdk"
     (java_home / "bin").mkdir(parents=True)

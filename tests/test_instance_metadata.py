@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from ECL.game import InstanceMetadata
+from ECL.minecraft.game import InstanceMetadata
 
 
 def test_metadata_retains_parent_java_and_all_components_without_jar(tmp_path: Path) -> None:

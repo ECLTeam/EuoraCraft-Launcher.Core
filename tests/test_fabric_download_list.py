@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock
 
-from ECL.game import GetGames
+from ECL.minecraft.game import GetGames
 
 
 def test_fabric_list_contains_loader_dependencies_and_writes_metadata(tmp_path: Path) -> None:
