@@ -34,7 +34,10 @@ def parse_launch_command(command: str) -> list[str]:
         raise CoreError("启动命令为空，无法校验启动参数", "LAUNCH_COMMAND_INVALID")
     if platform.system() == "Windows":
         return _parse_windows_command(command)
-    return shlex.split(command, posix=True)
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError as exc:
+        raise CoreError("启动命令引号不配对，无法解析启动参数", "LAUNCH_COMMAND_INVALID") from exc
 
 
 def validate_launch_command(command: str, *, version_name: str, main_class: str) -> None:
